@@ -1,4 +1,4 @@
-package com.androidmediabrowser;
+package com.mediabrowser;
 
 import androidx.annotation.NonNull;
 
@@ -11,12 +11,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-public class AndroidMediaBrowserPackage implements ReactPackage {
+public class MediaBrowserPackage implements ReactPackage {
   @NonNull
   @Override
   public List<NativeModule> createNativeModules(@NonNull ReactApplicationContext reactContext) {
     List<NativeModule> modules = new ArrayList<>();
-    modules.add(new AndroidMediaBrowserModule(reactContext));
+    modules.add(new MediaBrowserModule(reactContext));
     return modules;
   }
 
