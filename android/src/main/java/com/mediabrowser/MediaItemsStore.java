@@ -1,7 +1,7 @@
 package com.mediabrowser;
 
+import android.media.browse.MediaBrowser;
 import android.os.Build;
-import android.support.v4.media.MediaBrowserCompat;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -11,7 +11,7 @@ import java.util.Map;
 public class MediaItemsStore {
   private static MediaItemsStore instance;
 
-  private Map<String, List<MediaBrowserCompat.MediaItem>> mediaItemsHierarchy;
+  private Map<String, List<MediaBrowser.MediaItem>> mediaItemsHierarchy;
 
   private String rootId;
 
@@ -34,49 +34,71 @@ public class MediaItemsStore {
     return rootId;
   }
 
-  public void setMediaItemsHierarchy(Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
+  public void setMediaItemsHierarchy(Map<String, List<MediaBrowser.MediaItem>> hierarchy) {
     this.mediaItemsHierarchy = hierarchy;
+    if (listener != null) {
+      listener.onMediaItemsUpdated();
+    }
   }
 
-  public List<MediaBrowserCompat.MediaItem> getMediaItemsByParentId(String parentId) {
+  public List<MediaBrowser.MediaItem> getMediaItemsByParentId(String parentId) {
     return mediaItemsHierarchy.get(parentId);
   }
 
-  public void pushMediaItem(String parentId, MediaBrowserCompat.MediaItem newItem) {
-    List<MediaBrowserCompat.MediaItem> children = mediaItemsHierarchy.get(parentId);
+  public void pushMediaItem(String parentId, MediaBrowser.MediaItem newItem) {
+    List<MediaBrowser.MediaItem> children = mediaItemsHierarchy.get(parentId);
     if (children != null) {
       children.add(newItem);
+    }
+    if (listener != null) {
+      listener.onMediaItemsUpdated();
     }
   }
 
   public void deleteMediaItem(String itemId) {
-    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
-      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
+    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowser.MediaItem> children = entry.getValue();
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         children.removeIf(item -> item.getMediaId().equals(itemId));
       } else {
-        Iterator<MediaBrowserCompat.MediaItem> iterator = children.iterator();
+        Iterator<MediaBrowser.MediaItem> iterator = children.iterator();
         while (iterator.hasNext()) {
-          MediaBrowserCompat.MediaItem item = iterator.next();
+          MediaBrowser.MediaItem item = iterator.next();
           if (item.getMediaId().equals(itemId)) {
             iterator.remove();
           }
         }
       }
     }
+    if (listener != null) {
+      listener.onMediaItemsUpdated();
+    }
   }
 
-  public void updateMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
+  public void updateMediaItem(MediaBrowser.MediaItem updatedItem) {
     String itemId = updatedItem.getMediaId();
-    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
-      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
+    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowser.MediaItem> children = entry.getValue();
       for (int i = 0; i < children.size(); i++) {
-        MediaBrowserCompat.MediaItem currentItem = children.get(i);
+        MediaBrowser.MediaItem currentItem = children.get(i);
         if (currentItem.getMediaId().equals(itemId)) {
           children.set(i, updatedItem);
           break;
         }
       }
     }
+    if (listener != null) {
+      listener.onMediaItemsUpdated();
+    }
+  }
+
+  public interface MediaItemsUpdateListener {
+    void onMediaItemsUpdated();
+  }
+
+  private MediaItemsUpdateListener listener;
+
+  public void setListener(MediaItemsUpdateListener listener) {
+    this.listener = listener;
   }
 }

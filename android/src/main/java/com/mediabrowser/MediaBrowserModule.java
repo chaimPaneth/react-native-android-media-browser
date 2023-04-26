@@ -1,9 +1,12 @@
 package com.mediabrowser;
 
+import android.content.ContentResolver;
+import android.media.MediaDescription;
+import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Bundle;
-import android.support.v4.media.MediaBrowserCompat;
-import android.support.v4.media.MediaDescriptionCompat;
+import android.service.media.MediaBrowserService;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.media.utils.MediaConstants;
@@ -38,11 +41,16 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     return NAME;
   }
 
+  private static final String TAG = "MediaBrowserModule";
+
   @ReactMethod
   public void setMediaItems(String itemsJson) {
+    Log.d(TAG, "setMediaItems called: " + itemsJson);
+
     try {
       JSONObject itemsObject = new JSONObject(itemsJson);
-      Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsObject);
+      Map<String, List<MediaBrowser.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsObject);
+      Log.d(TAG, "setMediaItems hierarchy: " + hierarchy);
       MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
       MediaItemsStore.getInstance().setRootId(itemsObject.getString("id"));
     } catch (JSONException e) {
@@ -54,7 +62,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void pushMediaItem(String parentId, String itemJson) {
     try {
       JSONObject itemObject = new JSONObject(itemJson);
-      MediaBrowserCompat.MediaItem newItem = createMediaItem(itemObject);
+      MediaBrowser.MediaItem newItem = createMediaItem(itemObject);
       MediaItemsStore.getInstance().pushMediaItem(parentId, newItem);
     } catch (JSONException e) {
       e.printStackTrace();
@@ -70,47 +78,47 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void updateMediaItem(String updatedItemJson) {
     try {
       JSONObject updatedItemObject = new JSONObject(updatedItemJson);
-      MediaBrowserCompat.MediaItem updatedItem = createMediaItem(updatedItemObject);
+      MediaBrowser.MediaItem updatedItem = createMediaItem(updatedItemObject);
       MediaItemsStore.getInstance().updateMediaItem(updatedItem);
     } catch (JSONException e) {
       e.printStackTrace();
     }
   }
 
-  private Map<String, List<MediaBrowserCompat.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {
-    Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = new HashMap<>();
+  private Map<String, List<MediaBrowser.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {
+    Map<String, List<MediaBrowser.MediaItem>> hierarchy = new HashMap<>();
 
     String rootId = itemsObject.getString("id");
     JSONArray rootItems = itemsObject.getJSONArray("root");
 
     for (int i = 0; i < rootItems.length(); i++) {
       JSONObject item = rootItems.getJSONObject(i);
-      addMediaItemToHierarchy(item, hierarchy);
+      addMediaItemToHierarchy(item, hierarchy, rootId);
     }
 
     return hierarchy;
   }
 
-  private void addMediaItemToHierarchy(JSONObject item, Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) throws JSONException {
-    String parentId = item.getString("id");
+  private void addMediaItemToHierarchy(JSONObject item, Map<String, List<MediaBrowser.MediaItem>> hierarchy, String parentId) throws JSONException {
+    MediaBrowser.MediaItem mediaItem = createMediaItem(item);
+
+    if (!hierarchy.containsKey(parentId)) {
+      hierarchy.put(parentId, new ArrayList<>());
+    }
+    hierarchy.get(parentId).add(mediaItem);
 
     JSONArray children = item.optJSONArray("children");
     if (children != null) {
-      List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
       for (int i = 0; i < children.length(); i++) {
         JSONObject childItem = children.getJSONObject(i);
-        MediaBrowserCompat.MediaItem mediaItem = createMediaItem(childItem);
-        mediaItems.add(mediaItem);
-
-        addMediaItemToHierarchy(childItem, hierarchy);
+        addMediaItemToHierarchy(childItem, hierarchy, item.getString("id"));
       }
-      hierarchy.put(parentId, mediaItems);
     }
   }
 
-  private MediaBrowserCompat.MediaItem createMediaItem(JSONObject itemObject) throws JSONException {
+  private MediaBrowser.MediaItem createMediaItem(JSONObject itemObject) throws JSONException {
     String mediaId = itemObject.getString("id");
-    MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
+    MediaDescription.Builder description = new MediaDescription.Builder()
       .setMediaId(mediaId);
 
     if (itemObject.has("title")) {
@@ -119,8 +127,18 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     if (itemObject.has("subTitle")) {
       description.setSubtitle(itemObject.getString("subTitle"));
     }
+
     if (itemObject.has("icon")) {
-      description.setIconUri(Uri.parse(itemObject.getString("icon")));
+      Uri iconUri = Uri.parse(itemObject.getString("icon"));
+      if ("res".equals(iconUri.getScheme())) {
+        int iconResId = getReactApplicationContext().getResources().getIdentifier(iconUri.getHost() + ":" + iconUri.getPath(), "drawable", getReactApplicationContext().getPackageName());
+        description.setIconUri(Uri.parse("android.resource://" + getReactApplicationContext().getPackageName() + "/" + iconResId));
+      } else {
+        Uri webUri = Uri.parse(itemObject.getString("icon"));
+        Uri contentUri = asAlbumArtContentURI(webUri);
+
+        description.setIconUri(contentUri);
+      }
     }
 
     Bundle extras = new Bundle();
@@ -146,10 +164,18 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     description.setExtras(extras);
 
     int flags = itemObject.getString("playableOrBrowsable").equals("PLAYABLE")
-      ? MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
-      : MediaBrowserCompat.MediaItem.FLAG_BROWSABLE;
+      ? MediaBrowser.MediaItem.FLAG_PLAYABLE
+      : MediaBrowser.MediaItem.FLAG_BROWSABLE;
 
-    return new MediaBrowserCompat.MediaItem(description.build(), flags);
+    return new MediaBrowser.MediaItem(description.build(), flags);
+  }
+
+  public static Uri asAlbumArtContentURI(Uri webUri) {
+    return new Uri.Builder()
+      .scheme(ContentResolver.SCHEME_CONTENT)
+      .authority(MediaArtworkContentProvider.CONTENT_PROVIDER_AUTHORITY)
+      .appendPath(webUri.getPath()) // Make sure you trust the URI!
+      .build();
   }
 
   private int mapContentStyle(String contentStyle) {
