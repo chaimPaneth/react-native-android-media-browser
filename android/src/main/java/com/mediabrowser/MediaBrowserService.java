@@ -8,6 +8,11 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.ReactContext;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,12 +32,24 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
 
     mSession = new MediaSession(this, "MediaBrowserService");
     setSessionToken(mSession.getSessionToken());
+
+    mSession.setCallback(new MediaSession.Callback() {
+      @Override
+      public void onPlayFromMediaId(String mediaId, Bundle extras) {
+        super.onPlayFromMediaId(mediaId, extras);
+        sendMediaItemToJS(mediaId);
+      }
+    });
+
+    mSession.setActive(true);
   }
 
   @Override
-  public void onMediaItemsUpdated() {
+  public void onMediaItemsUpdated(String parentId) {
     Log.d(TAG, "onMediaItemsUpdated called");
-    notifyChildrenChanged(MediaItemsStore.getInstance().getRootId());
+    if (parentId != null) {
+      notifyChildrenChanged(parentId);
+    }
   }
 
   @Override
@@ -60,5 +77,23 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
     }
 
     result.sendResult(mediaItems);
+  }
+
+  private void sendMediaItemToJS(String mediaId) {
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    if (reactContext != null) {
+      MediaBrowser.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+      if (mediaItem != null) {
+        WritableMap mediaItemMap = Arguments.createMap();
+        mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
+        mediaItemMap.putString("title", mediaItem.getDescription().getTitle().toString());
+        mediaItemMap.putString("subTitle", mediaItem.getDescription().getSubtitle().toString());
+        mediaItemMap.putString("icon", mediaItem.getDescription().getIconUri().toString());
+        mediaItemMap.putString("mediaUrl", mediaItem.getDescription().getExtras().getString("media_url"));
+
+        reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+          .emit("onMediaItemSelected", mediaItemMap);
+      }
+    }
   }
 }

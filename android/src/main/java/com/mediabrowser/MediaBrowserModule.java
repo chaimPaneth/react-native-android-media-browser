@@ -33,6 +33,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   public MediaBrowserModule(ReactApplicationContext reactContext) {
     super(reactContext);
+    MediaItemsStore.getInstance().setReactApplicationContext(reactContext);
   }
 
   @Override

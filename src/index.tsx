@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform, DeviceEventEmitter, EmitterSubscription } from 'react-native';
 
 const { MediaBrowser } = NativeModules;
 
@@ -30,6 +30,8 @@ interface MediaItemsStructure {
   root: MediaItem[];
 }
 
+let mediaItemSelectedListener: EmitterSubscription | null = null;
+
 const MediaBrowserWrapper = {
   ...MediaBrowser,
   setMediaItems: (items: MediaItemsStructure) => {
@@ -44,6 +46,16 @@ const MediaBrowserWrapper = {
   },
   updateMediaItem: (updatedItem: MediaItem) => {
     MediaBrowser.updateMediaItem(JSON.stringify(updatedItem));
+  },
+  onMediaItemSelected: (listener: EmitterSubscription) => {
+    if (mediaItemSelectedListener) {
+      mediaItemSelectedListener.remove();
+    }
+
+    mediaItemSelectedListener = DeviceEventEmitter.addListener(
+      'onMediaItemSelected',
+      listener,
+    );
   },
 };
 

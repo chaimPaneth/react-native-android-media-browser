@@ -1,9 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-          package="com.mediabrowser">
+  xmlns:tools="http://schemas.android.com/tools"
+  package="com.mediabrowser">
     <application>
         <service
             android:name=".MediaBrowserService"
-            android:exported="true">
+            android:exported="true"
+            android:enabled="true"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>

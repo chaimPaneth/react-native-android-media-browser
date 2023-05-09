@@ -3,17 +3,29 @@ package com.mediabrowser;
 import android.media.browse.MediaBrowser;
 import android.os.Build;
 
+import com.facebook.react.bridge.ReactApplicationContext;
+
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 public class MediaItemsStore {
+  private ReactApplicationContext reactContext;
+
   private static MediaItemsStore instance;
 
   private Map<String, List<MediaBrowser.MediaItem>> mediaItemsHierarchy;
 
   private String rootId;
+
+  public void setReactApplicationContext(ReactApplicationContext reactContext) {
+    this.reactContext = reactContext;
+  }
+
+  public ReactApplicationContext getReactApplicationContext() {
+    return reactContext;
+  }
 
   private MediaItemsStore() {
     mediaItemsHierarchy = new HashMap<>();
@@ -37,12 +49,30 @@ public class MediaItemsStore {
   public void setMediaItemsHierarchy(Map<String, List<MediaBrowser.MediaItem>> hierarchy) {
     this.mediaItemsHierarchy = hierarchy;
     if (listener != null) {
-      listener.onMediaItemsUpdated();
+      String rootId = getRootId();
+      // If the root ID is null, try to get it from the first item in the hierarchy
+      if (rootId == null && !hierarchy.isEmpty()) {
+        Map.Entry<String, List<MediaBrowser.MediaItem>> firstEntry = hierarchy.entrySet().iterator().next();
+        rootId = firstEntry.getKey();
+      }
+      listener.onMediaItemsUpdated(rootId);
     }
   }
 
   public List<MediaBrowser.MediaItem> getMediaItemsByParentId(String parentId) {
     return mediaItemsHierarchy.get(parentId);
+  }
+
+  public MediaBrowser.MediaItem getMediaItemById(String itemId) {
+    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowser.MediaItem> children = entry.getValue();
+      for (MediaBrowser.MediaItem item : children) {
+        if (item.getMediaId().equals(itemId)) {
+          return item;
+        }
+      }
+    }
+    return null; // Return null if the item is not found
   }
 
   public void pushMediaItem(String parentId, MediaBrowser.MediaItem newItem) {
@@ -51,49 +81,61 @@ public class MediaItemsStore {
       children.add(newItem);
     }
     if (listener != null) {
-      listener.onMediaItemsUpdated();
+      listener.onMediaItemsUpdated(parentId);
     }
   }
 
   public void deleteMediaItem(String itemId) {
+    String parentId = null;
     for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
       List<MediaBrowser.MediaItem> children = entry.getValue();
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        children.removeIf(item -> item.getMediaId().equals(itemId));
+        boolean removed = children.removeIf(item -> item.getMediaId().equals(itemId));
+        if (removed) {
+          parentId = entry.getKey();
+          break;
+        }
       } else {
         Iterator<MediaBrowser.MediaItem> iterator = children.iterator();
         while (iterator.hasNext()) {
           MediaBrowser.MediaItem item = iterator.next();
           if (item.getMediaId().equals(itemId)) {
             iterator.remove();
+            parentId = entry.getKey();
+            break;
           }
         }
       }
     }
-    if (listener != null) {
-      listener.onMediaItemsUpdated();
+    if (listener != null && parentId != null) {
+      listener.onMediaItemsUpdated(parentId);
     }
   }
 
   public void updateMediaItem(MediaBrowser.MediaItem updatedItem) {
     String itemId = updatedItem.getMediaId();
+    String parentId = null;
     for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
       List<MediaBrowser.MediaItem> children = entry.getValue();
       for (int i = 0; i < children.size(); i++) {
         MediaBrowser.MediaItem currentItem = children.get(i);
         if (currentItem.getMediaId().equals(itemId)) {
           children.set(i, updatedItem);
+          parentId = entry.getKey();
           break;
         }
       }
+      if (parentId != null) {
+        break;
+      }
     }
-    if (listener != null) {
-      listener.onMediaItemsUpdated();
+    if (listener != null && parentId != null) {
+      listener.onMediaItemsUpdated(parentId);
     }
   }
 
   public interface MediaItemsUpdateListener {
-    void onMediaItemsUpdated();
+    void onMediaItemsUpdated(String parentId);
   }
 
   private MediaItemsUpdateListener listener;
