@@ -13,6 +13,18 @@ export type ContentStyle =
   | typeof CONTENT_STYLE_CATEGORY_LIST_ITEM
   | typeof CONTENT_STYLE_CATEGORY_GRID_ITEM;
 
+export const EXTRA_DOWNLOAD_STATUS = 'android.media.extra.DOWNLOAD_STATUS';
+export const STATUS_DOWNLOADED = 2;
+export const STATUS_DOWNLOADING = 1;
+export const STATUS_NOT_DOWNLOADED = 0;
+export const METADATA_KEY_IS_EXPLICIT = 'android.media.metadata.IS_EXPLICIT';
+export const METADATA_VALUE_ATTRIBUTE_PRESENT = 1;
+export const DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS = 'android.media.description.extra.COMPLETION_STATUS';
+export const DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_NOT_PLAYED = 0;
+export const DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED = 1;
+export const DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_FULLY_PLAYED = 2;
+export const DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE = 'android.media.description.extra.COMPLETION_PERCENTAGE';
+
 interface MediaItem {
   id: string;
   title: string;

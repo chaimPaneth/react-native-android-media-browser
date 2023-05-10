@@ -1,5 +1,11 @@
 package com.mediabrowser;
 
+import static android.support.v4.media.MediaDescriptionCompat.EXTRA_DOWNLOAD_STATUS;
+
+import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE;
+import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS;
+import static androidx.media.utils.MediaConstants.METADATA_KEY_IS_EXPLICIT;
+
 import android.content.ContentResolver;
 import android.media.MediaDescription;
 import android.media.browse.MediaBrowser;
@@ -52,8 +58,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       JSONObject itemsObject = new JSONObject(itemsJson);
       Map<String, List<MediaBrowser.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsObject);
       Log.d(TAG, "setMediaItems hierarchy: " + hierarchy);
-      MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
       MediaItemsStore.getInstance().setRootId(itemsObject.getString("id"));
+      MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
     } catch (JSONException e) {
       e.printStackTrace();
     }
@@ -135,10 +141,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         int iconResId = getReactApplicationContext().getResources().getIdentifier(iconUri.getHost() + ":" + iconUri.getPath(), "drawable", getReactApplicationContext().getPackageName());
         description.setIconUri(Uri.parse("android.resource://" + getReactApplicationContext().getPackageName() + "/" + iconResId));
       } else {
-        Uri webUri = Uri.parse(itemObject.getString("icon"));
-        Uri contentUri = asAlbumArtContentURI(webUri);
-
-        description.setIconUri(contentUri);
+//        Uri contentUri = asAlbumArtContentURI(iconUri);
+        description.setIconUri(iconUri);
       }
     }
 
@@ -160,6 +164,26 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     if (itemObject.has("groupTitle")) {
       String groupTitle = itemObject.getString("groupTitle");
       extras.putString(MediaConstants.DESCRIPTION_EXTRAS_KEY_CONTENT_STYLE_GROUP_TITLE, groupTitle);
+    }
+
+    JSONObject itemExtras;
+    if (itemObject.has("extras")) {
+      itemExtras = itemObject.getJSONObject("extras");
+    } else {
+      itemExtras = new JSONObject();
+    }
+
+    if (itemExtras.has(EXTRA_DOWNLOAD_STATUS)) {
+      extras.putInt(EXTRA_DOWNLOAD_STATUS, itemExtras.getInt(EXTRA_DOWNLOAD_STATUS));
+    }
+    if (itemExtras.has(METADATA_KEY_IS_EXPLICIT)) {
+      extras.putLong(METADATA_KEY_IS_EXPLICIT, itemExtras.getInt(METADATA_KEY_IS_EXPLICIT));
+    }
+    if (itemExtras.has(DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS)) {
+      extras.putInt(DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS, itemExtras.getInt(DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS));
+    }
+    if (itemExtras.has(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE)) {
+      extras.putDouble(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE, itemExtras.getDouble(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE));
     }
 
     description.setExtras(extras);
