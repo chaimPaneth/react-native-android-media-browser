@@ -1,7 +1,13 @@
 package com.mediabrowser;
 
+import android.content.ComponentName;
+import android.content.Context;
 import android.media.browse.MediaBrowser;
+import android.media.session.MediaController;
+import android.media.session.MediaSession;
+import android.media.session.MediaSessionManager;
 import android.os.Build;
+import android.service.notification.NotificationListenerService;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 
@@ -10,10 +16,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-public class MediaItemsStore {
+public class MediaItemsStore extends NotificationListenerService {
   private ReactApplicationContext reactContext;
 
   private static MediaItemsStore instance;
+
+  private MediaSession.Token sessionToken;
 
   private Map<String, List<MediaBrowser.MediaItem>> mediaItemsHierarchy;
 
@@ -36,6 +44,21 @@ public class MediaItemsStore {
       instance = new MediaItemsStore();
     }
     return instance;
+  }
+
+  public void findMediaSession() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+      MediaSessionManager mediaSessionManager = (MediaSessionManager) reactContext.getSystemService(Context.MEDIA_SESSION_SERVICE);
+
+      List<MediaController> mediaControllerList = mediaSessionManager.getActiveSessions(
+        new ComponentName(reactContext, MediaItemsStore.class));
+
+      for (MediaController m : mediaControllerList) {
+        if (m.getPackageName().equals("com.alldaf")) {
+          sessionToken = m.getSessionToken();
+        }
+      }
+    }
   }
 
   public void setRootId(String rootId) {

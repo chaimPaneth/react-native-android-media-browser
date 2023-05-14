@@ -55,7 +55,6 @@ public class MediaArtworkContentProvider extends ContentProvider {
     if (remoteUri == null) throw new FileNotFoundException(uri.getPath());
 
     File file = new File(getContext().getCacheDir(), uri.getPath());
-
     if (!file.exists()) {
       // Use Glide to download the album art.
       File cacheFile = null;

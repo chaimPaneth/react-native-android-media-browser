@@ -69,6 +69,16 @@ const MediaBrowserWrapper = {
       listener,
     );
   },
+  onCarConnectionChanged: (listener: EmitterSubscription) => {
+    if (mediaItemSelectedListener) {
+      mediaItemSelectedListener.remove();
+    }
+
+    mediaItemSelectedListener = DeviceEventEmitter.addListener(
+      'onCarConnectionChanged',
+      listener,
+    );
+  },
 };
 
 export default Platform.OS === 'android' ? MediaBrowserWrapper : null;

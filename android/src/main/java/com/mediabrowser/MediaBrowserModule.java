@@ -11,18 +11,16 @@ import android.media.MediaDescription;
 import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Bundle;
-import android.service.media.MediaBrowserService;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.media.utils.MediaConstants;
 
-import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.module.annotations.ReactModule;
-import com.mediabrowser.MediaItemsStore;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -37,9 +35,24 @@ import java.util.Map;
 public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public static final String NAME = "MediaBrowser";
 
+  private MediaBrowserAutoConnection autoConnection;
+
   public MediaBrowserModule(ReactApplicationContext reactContext) {
     super(reactContext);
     MediaItemsStore.getInstance().setReactApplicationContext(reactContext);
+
+    autoConnection = new MediaBrowserAutoConnection(reactContext);
+    autoConnection.setListener(new MediaBrowserAutoConnection.OnCarConnectionStateListener() {
+      @Override
+      public void onCarConnected() {
+        sendCarConnectionToJS(true);
+      }
+
+      @Override
+      public void onCarDisconnected() {
+        sendCarConnectionToJS(false);
+      }
+    });
   }
 
   @Override
@@ -90,6 +103,27 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     } catch (JSONException e) {
       e.printStackTrace();
     }
+  }
+
+  @ReactMethod
+  public void findMediaSession() {
+    MediaItemsStore.getInstance().findMediaSession();
+  }
+
+  @ReactMethod
+  public void registerCarConnectionReceiver() {
+    autoConnection.registerCarConnectionReceiver();
+  }
+
+  @ReactMethod
+  public void unregisterCarConnectionReceiver() {
+    autoConnection.unRegisterCarConnectionReceiver();
+  }
+
+  private void sendCarConnectionToJS(boolean isCarConnected) {
+    getReactApplicationContext()
+      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+      .emit("onCarConnectionChanged", isCarConnected);
   }
 
   private Map<String, List<MediaBrowser.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {
