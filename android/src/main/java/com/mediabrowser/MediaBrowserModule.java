@@ -6,6 +6,7 @@ import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLET
 import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS;
 import static androidx.media.utils.MediaConstants.METADATA_KEY_IS_EXPLICIT;
 
+import android.app.Activity;
 import android.content.ContentResolver;
 import android.media.MediaDescription;
 import android.media.browse.MediaBrowser;
@@ -36,6 +37,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 
 @ReactModule(name = MediaBrowserModule.NAME)
 public class MediaBrowserModule extends ReactContextBaseJavaModule {
@@ -45,28 +48,14 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   private CarConnection carConnection;
 
+  private ReactApplicationContext reactContext;
+
   public MediaBrowserModule(ReactApplicationContext reactContext) {
     super(reactContext);
+    this.reactContext = reactContext;
     MediaItemsStore.getInstance().setReactApplicationContext(reactContext);
 
-    carConnection = new CarConnection(reactContext);
-    carConnection.getType().observe((LifecycleOwner) reactContext.getCurrentActivity(), new Observer<Integer>() {
-      @Override
-      public void onChanged(Integer connectionType) {
-        sendCarConnectionToJS(connectionType);
-
-//        switch (connectionType) {
-//          case CarConnection.CONNECTION_TYPE_NOT_CONNECTED:
-//            break;
-//          case CarConnection.CONNECTION_TYPE_NATIVE:
-//            // Handle native connection state
-//            break;
-//          case CarConnection.CONNECTION_TYPE_PROJECTION:
-//            // Handle projection connection state
-//            break;
-//        }
-      }
-    });
+    initializeCarConnection();
   }
 
   @Override
@@ -83,6 +72,38 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
     // React Native is ready, we can register the receiver
     isReactNativeReady = true;
+
+    if (carConnection == null) {
+      initializeCarConnection();
+    }
+  }
+
+  private void initializeCarConnection() {
+    UiThreadUtil.runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        if (isReactNativeReady && carConnection == null) {
+          carConnection = new CarConnection(reactContext);
+          carConnection.getType().observe((LifecycleOwner) reactContext.getCurrentActivity(), new Observer<Integer>() {
+            @Override
+            public void onChanged(Integer connectionType) {
+              sendCarConnectionToJS(connectionType);
+
+//        switch (connectionType) {
+//          case CarConnection.CONNECTION_TYPE_NOT_CONNECTED:
+//            break;
+//          case CarConnection.CONNECTION_TYPE_NATIVE:
+//            // Handle native connection state
+//            break;
+//          case CarConnection.CONNECTION_TYPE_PROJECTION:
+//            // Handle projection connection state
+//            break;
+//        }
+            }
+          });
+        }
+      }
+    });
   }
 
   @ReactMethod
@@ -235,6 +256,10 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     }
 
     description.setExtras(extras);
+
+    if (!itemObject.has("playableOrBrowsable")) {
+      throw new Error("Required field playableOrBrowsable not provided.");
+    }
 
     int flags = itemObject.getString("playableOrBrowsable").equals("PLAYABLE")
       ? MediaBrowser.MediaItem.FLAG_PLAYABLE
