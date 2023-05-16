@@ -11,14 +11,20 @@ import android.media.MediaDescription;
 import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.car.app.connection.CarConnection;
+import androidx.lifecycle.LifecycleOwner;
+import androidx.lifecycle.Observer;
 import androidx.media.utils.MediaConstants;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.UiThreadUtil;
 import com.facebook.react.module.annotations.ReactModule;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
@@ -35,22 +41,30 @@ import java.util.Map;
 public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public static final String NAME = "MediaBrowser";
 
-  private MediaBrowserAutoConnection autoConnection;
+  private boolean isReactNativeReady = false;
+
+  private CarConnection carConnection;
 
   public MediaBrowserModule(ReactApplicationContext reactContext) {
     super(reactContext);
     MediaItemsStore.getInstance().setReactApplicationContext(reactContext);
 
-    autoConnection = new MediaBrowserAutoConnection(reactContext);
-    autoConnection.setListener(new MediaBrowserAutoConnection.OnCarConnectionStateListener() {
+    carConnection = new CarConnection(reactContext);
+    carConnection.getType().observe((LifecycleOwner) reactContext.getCurrentActivity(), new Observer<Integer>() {
       @Override
-      public void onCarConnected() {
-        sendCarConnectionToJS(true);
-      }
+      public void onChanged(Integer connectionType) {
+        sendCarConnectionToJS(connectionType);
 
-      @Override
-      public void onCarDisconnected() {
-        sendCarConnectionToJS(false);
+//        switch (connectionType) {
+//          case CarConnection.CONNECTION_TYPE_NOT_CONNECTED:
+//            break;
+//          case CarConnection.CONNECTION_TYPE_NATIVE:
+//            // Handle native connection state
+//            break;
+//          case CarConnection.CONNECTION_TYPE_PROJECTION:
+//            // Handle projection connection state
+//            break;
+//        }
       }
     });
   }
@@ -62,6 +76,14 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private static final String TAG = "MediaBrowserModule";
+
+  @Override
+  public void initialize() {
+    super.initialize();
+
+    // React Native is ready, we can register the receiver
+    isReactNativeReady = true;
+  }
 
   @ReactMethod
   public void setMediaItems(String itemsJson) {
@@ -110,20 +132,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     MediaItemsStore.getInstance().findMediaSession();
   }
 
-  @ReactMethod
-  public void registerCarConnectionReceiver() {
-    autoConnection.registerCarConnectionReceiver();
-  }
-
-  @ReactMethod
-  public void unregisterCarConnectionReceiver() {
-    autoConnection.unRegisterCarConnectionReceiver();
-  }
-
-  private void sendCarConnectionToJS(boolean isCarConnected) {
-    getReactApplicationContext()
-      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-      .emit("onCarConnectionChanged", isCarConnected);
+  private void sendCarConnectionToJS(Integer carState) {
+    if (isReactNativeReady) {
+      getReactApplicationContext()
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+        .emit("onCarConnectionChanged", carState);
+    }
   }
 
   private Map<String, List<MediaBrowser.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {

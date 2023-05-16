@@ -1,7 +1,9 @@
 package com.mediabrowser;
 
+import android.content.Context;
 import android.media.browse.MediaBrowser;
 import android.media.session.MediaSession;
+import android.media.session.MediaSessionManager;
 import android.os.Bundle;
 import android.util.Log;
 
@@ -43,6 +45,26 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
 
     mSession.setActive(true);
   }
+
+//  private MediaSession getMediaSession() {
+//    // Get a reference to the MediaSessionManager.
+//    MediaSessionManager mediaSessionManager = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
+//
+//    // Get a list of all active media sessions.
+//    List<MediaSession> activeSessions = mediaSessionManager.getActiveSessions();
+//
+//    // Loop through the list of active sessions.
+//    for (MediaSession mediaSession : activeSessions) {
+//
+//      // If the media session is active, then return it.
+//      if (mediaSession.isActive()) {
+//        return mediaSession;
+//      }
+//    }
+//
+//    // No active media session found.
+//    return null;
+//  }
 
   @Override
   public void onMediaItemsUpdated(String parentId) {
