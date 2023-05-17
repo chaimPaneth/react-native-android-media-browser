@@ -9,11 +9,12 @@ import static androidx.media.utils.MediaConstants.METADATA_KEY_IS_EXPLICIT;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.media.MediaDescription;
-import android.media.browse.MediaBrowser;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaDescriptionCompat;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -112,7 +113,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
     try {
       JSONObject itemsObject = new JSONObject(itemsJson);
-      Map<String, List<MediaBrowser.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsObject);
+      Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsObject);
       Log.d(TAG, "setMediaItems hierarchy: " + hierarchy);
       MediaItemsStore.getInstance().setRootId(itemsObject.getString("id"));
       MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
@@ -125,7 +126,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void pushMediaItem(String parentId, String itemJson) {
     try {
       JSONObject itemObject = new JSONObject(itemJson);
-      MediaBrowser.MediaItem newItem = createMediaItem(itemObject);
+      MediaBrowserCompat.MediaItem newItem = createMediaItem(itemObject);
       MediaItemsStore.getInstance().pushMediaItem(parentId, newItem);
     } catch (JSONException e) {
       e.printStackTrace();
@@ -141,16 +142,11 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void updateMediaItem(String updatedItemJson) {
     try {
       JSONObject updatedItemObject = new JSONObject(updatedItemJson);
-      MediaBrowser.MediaItem updatedItem = createMediaItem(updatedItemObject);
+      MediaBrowserCompat.MediaItem updatedItem = createMediaItem(updatedItemObject);
       MediaItemsStore.getInstance().updateMediaItem(updatedItem);
     } catch (JSONException e) {
       e.printStackTrace();
     }
-  }
-
-  @ReactMethod
-  public void findMediaSession() {
-    MediaItemsStore.getInstance().findMediaSession();
   }
 
   private void sendCarConnectionToJS(Integer carState) {
@@ -161,8 +157,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     }
   }
 
-  private Map<String, List<MediaBrowser.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {
-    Map<String, List<MediaBrowser.MediaItem>> hierarchy = new HashMap<>();
+  private Map<String, List<MediaBrowserCompat.MediaItem>> buildMediaItemsHierarchy(JSONObject itemsObject) throws JSONException {
+    Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = new HashMap<>();
 
     String rootId = itemsObject.getString("id");
     JSONArray rootItems = itemsObject.getJSONArray("root");
@@ -175,8 +171,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     return hierarchy;
   }
 
-  private void addMediaItemToHierarchy(JSONObject item, Map<String, List<MediaBrowser.MediaItem>> hierarchy, String parentId) throws JSONException {
-    MediaBrowser.MediaItem mediaItem = createMediaItem(item);
+  private void addMediaItemToHierarchy(JSONObject item, Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy, String parentId) throws JSONException {
+    MediaBrowserCompat.MediaItem mediaItem = createMediaItem(item);
 
     if (!hierarchy.containsKey(parentId)) {
       hierarchy.put(parentId, new ArrayList<>());
@@ -192,9 +188,9 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     }
   }
 
-  private MediaBrowser.MediaItem createMediaItem(JSONObject itemObject) throws JSONException {
+  private MediaBrowserCompat.MediaItem createMediaItem(JSONObject itemObject) throws JSONException {
     String mediaId = itemObject.getString("id");
-    MediaDescription.Builder description = new MediaDescription.Builder()
+    MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
       .setMediaId(mediaId);
 
     if (itemObject.has("title")) {
@@ -262,10 +258,10 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     }
 
     int flags = itemObject.getString("playableOrBrowsable").equals("PLAYABLE")
-      ? MediaBrowser.MediaItem.FLAG_PLAYABLE
-      : MediaBrowser.MediaItem.FLAG_BROWSABLE;
+      ? MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
+      : MediaBrowserCompat.MediaItem.FLAG_BROWSABLE;
 
-    return new MediaBrowser.MediaItem(description.build(), flags);
+    return new MediaBrowserCompat.MediaItem(description.build(), flags);
   }
 
   public static Uri asAlbumArtContentURI(Uri webUri) {

@@ -1,10 +1,17 @@
 package com.mediabrowser;
 
 import android.content.Context;
-import android.media.browse.MediaBrowser;
-import android.media.session.MediaSession;
+import android.content.res.Configuration;
+import android.media.MediaMetadata;
+import androidx.media.MediaBrowserServiceCompat;
 import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
+import android.net.Uri;
 import android.os.Bundle;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaSessionCompat;
+import android.support.v4.media.session.PlaybackStateCompat;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -18,12 +25,12 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MediaBrowserService extends android.service.media.MediaBrowserService implements MediaItemsStore.MediaItemsUpdateListener {
+public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
 
   private static final String TAG = "MediaBrowserService";
 
-  MediaSession mSession;
+  MediaSessionCompat mSession;
 
   @Override
   public void onCreate() {
@@ -32,21 +39,74 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
 
     MediaItemsStore.getInstance().setListener(this);
 
-    mSession = new MediaSession(this, "MediaBrowserService");
+    mSession = MediaSessionSingleton.getInstance(this);
+
+//    mSession = new MediaSessionCompat(this, "MediaBrowserService");
     setSessionToken(mSession.getSessionToken());
 
-    mSession.setCallback(new MediaSession.Callback() {
+    PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
+      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+    mSession.setPlaybackState(stateBuilder.build());
+
+    mSession.setCallback(new MediaSessionCompat.Callback() {
+      @Override
+      public void onPrepare() {
+        super.onPrepare();
+      }
+
+      @Override
+      public void onPrepareFromMediaId(String mediaId, Bundle extras) {
+        super.onPrepareFromMediaId(mediaId, extras);
+      }
+
+      @Override
+      public void onPrepareFromSearch(String query, Bundle extras) {
+        super.onPrepareFromSearch(query, extras);
+      }
+
+      @Override
+      public void onPrepareFromUri(Uri uri, Bundle extras) {
+        super.onPrepareFromUri(uri, extras);
+      }
+
       @Override
       public void onPlayFromMediaId(String mediaId, Bundle extras) {
         super.onPlayFromMediaId(mediaId, extras);
         sendMediaItemToJS(mediaId);
+
+        // Fetch the MediaItem from the MediaItemsStore.
+        MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+        if (mediaItem != null) {
+          // Update the MediaSession's metadata.
+          mSession.setMetadata(new MediaMetadataCompat.Builder()
+            .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, mediaItem.getDescription().getMediaId())
+            .putString(MediaMetadata.METADATA_KEY_TITLE, mediaItem.getDescription().getTitle().toString())
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, mediaItem.getDescription().getSubtitle().toString())
+            // Add more metadata fields as needed.
+            .build());
+        }
+      }
+
+      @Override
+      public void onPlayFromSearch(String query, Bundle extras) {
+        super.onPlayFromSearch(query, extras);
+      }
+
+      @Override
+      public void onPlayFromUri(Uri uri, Bundle extras) {
+        super.onPlayFromUri(uri, extras);
       }
     });
 
     mSession.setActive(true);
   }
 
-//  private MediaSession getMediaSession() {
+  @Override
+  public void onConfigurationChanged(Configuration newConfig) {
+    super.onConfigurationChanged(newConfig);
+  }
+
+  //  private MediaSession getMediaSession() {
 //    // Get a reference to the MediaSessionManager.
 //    MediaSessionManager mediaSessionManager = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
 //
@@ -83,16 +143,16 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
     Log.d(TAG, "MyRootID is: " + rootId);
 
     // Print the media hierarchy
-    List<MediaBrowser.MediaItem> mediaHierarchy = MediaItemsStore.getInstance().getMediaItemsByParentId(rootId);
+    List<MediaBrowserCompat.MediaItem> mediaHierarchy = MediaItemsStore.getInstance().getMediaItemsByParentId(rootId);
     Log.d(TAG, "Media hierarchy: " + mediaHierarchy);
     return rootId != null ? new BrowserRoot(rootId, null) : null;
   }
 
   @Override
   public void onLoadChildren(@NonNull final String parentMediaId,
-                             @NonNull final Result<List<MediaBrowser.MediaItem>> result) {
+                             @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
     Log.d(TAG, "onLoadChildren called");
-    List<MediaBrowser.MediaItem> mediaItems = MediaItemsStore.getInstance().getMediaItemsByParentId(parentMediaId);
+    List<MediaBrowserCompat.MediaItem> mediaItems = MediaItemsStore.getInstance().getMediaItemsByParentId(parentMediaId);
 
     if (mediaItems == null) {
       mediaItems = new ArrayList<>();
@@ -104,7 +164,7 @@ public class MediaBrowserService extends android.service.media.MediaBrowserServi
   private void sendMediaItemToJS(String mediaId) {
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
     if (reactContext != null) {
-      MediaBrowser.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+      MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
       if (mediaItem != null) {
         WritableMap mediaItemMap = Arguments.createMap();
         mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());

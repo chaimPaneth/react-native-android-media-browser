@@ -2,12 +2,14 @@ package com.mediabrowser;
 
 import android.content.ComponentName;
 import android.content.Context;
-import android.media.browse.MediaBrowser;
 import android.media.session.MediaController;
 import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
 import android.os.Build;
 import android.service.notification.NotificationListenerService;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.session.MediaControllerCompat;
+import android.support.v4.media.session.MediaSessionCompat;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 
@@ -21,9 +23,9 @@ public class MediaItemsStore extends NotificationListenerService {
 
   private static MediaItemsStore instance;
 
-  private MediaSession.Token sessionToken;
+  private MediaSessionCompat.Token sessionToken;
 
-  private Map<String, List<MediaBrowser.MediaItem>> mediaItemsHierarchy;
+  private Map<String, List<MediaBrowserCompat.MediaItem>> mediaItemsHierarchy;
 
   private String rootId;
 
@@ -46,21 +48,6 @@ public class MediaItemsStore extends NotificationListenerService {
     return instance;
   }
 
-  public void findMediaSession() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-      MediaSessionManager mediaSessionManager = (MediaSessionManager) reactContext.getSystemService(Context.MEDIA_SESSION_SERVICE);
-
-      List<MediaController> mediaControllerList = mediaSessionManager.getActiveSessions(
-        new ComponentName(reactContext, MediaItemsStore.class));
-
-      for (MediaController m : mediaControllerList) {
-        if (m.getPackageName().equals("com.alldaf")) {
-          sessionToken = m.getSessionToken();
-        }
-      }
-    }
-  }
-
   public void setRootId(String rootId) {
     this.rootId = rootId;
   }
@@ -69,27 +56,27 @@ public class MediaItemsStore extends NotificationListenerService {
     return rootId;
   }
 
-  public void setMediaItemsHierarchy(Map<String, List<MediaBrowser.MediaItem>> hierarchy) {
+  public void setMediaItemsHierarchy(Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
     this.mediaItemsHierarchy = hierarchy;
     if (listener != null) {
       String rootId = getRootId();
       // If the root ID is null, try to get it from the first item in the hierarchy
       if (rootId == null && !hierarchy.isEmpty()) {
-        Map.Entry<String, List<MediaBrowser.MediaItem>> firstEntry = hierarchy.entrySet().iterator().next();
+        Map.Entry<String, List<MediaBrowserCompat.MediaItem>> firstEntry = hierarchy.entrySet().iterator().next();
         rootId = firstEntry.getKey();
       }
       listener.onMediaItemsUpdated(rootId);
     }
   }
 
-  public List<MediaBrowser.MediaItem> getMediaItemsByParentId(String parentId) {
+  public List<MediaBrowserCompat.MediaItem> getMediaItemsByParentId(String parentId) {
     return mediaItemsHierarchy.get(parentId);
   }
 
-  public MediaBrowser.MediaItem getMediaItemById(String itemId) {
-    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
-      List<MediaBrowser.MediaItem> children = entry.getValue();
-      for (MediaBrowser.MediaItem item : children) {
+  public MediaBrowserCompat.MediaItem getMediaItemById(String itemId) {
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
+      for (MediaBrowserCompat.MediaItem item : children) {
         if (item.getMediaId().equals(itemId)) {
           return item;
         }
@@ -98,8 +85,8 @@ public class MediaItemsStore extends NotificationListenerService {
     return null; // Return null if the item is not found
   }
 
-  public void pushMediaItem(String parentId, MediaBrowser.MediaItem newItem) {
-    List<MediaBrowser.MediaItem> children = mediaItemsHierarchy.get(parentId);
+  public void pushMediaItem(String parentId, MediaBrowserCompat.MediaItem newItem) {
+    List<MediaBrowserCompat.MediaItem> children = mediaItemsHierarchy.get(parentId);
     if (children != null) {
       children.add(newItem);
     }
@@ -110,8 +97,8 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void deleteMediaItem(String itemId) {
     String parentId = null;
-    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
-      List<MediaBrowser.MediaItem> children = entry.getValue();
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         boolean removed = children.removeIf(item -> item.getMediaId().equals(itemId));
         if (removed) {
@@ -119,9 +106,9 @@ public class MediaItemsStore extends NotificationListenerService {
           break;
         }
       } else {
-        Iterator<MediaBrowser.MediaItem> iterator = children.iterator();
+        Iterator<MediaBrowserCompat.MediaItem> iterator = children.iterator();
         while (iterator.hasNext()) {
-          MediaBrowser.MediaItem item = iterator.next();
+          MediaBrowserCompat.MediaItem item = iterator.next();
           if (item.getMediaId().equals(itemId)) {
             iterator.remove();
             parentId = entry.getKey();
@@ -135,13 +122,13 @@ public class MediaItemsStore extends NotificationListenerService {
     }
   }
 
-  public void updateMediaItem(MediaBrowser.MediaItem updatedItem) {
+  public void updateMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
     String itemId = updatedItem.getMediaId();
     String parentId = null;
-    for (Map.Entry<String, List<MediaBrowser.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
-      List<MediaBrowser.MediaItem> children = entry.getValue();
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
       for (int i = 0; i < children.size(); i++) {
-        MediaBrowser.MediaItem currentItem = children.get(i);
+        MediaBrowserCompat.MediaItem currentItem = children.get(i);
         if (currentItem.getMediaId().equals(itemId)) {
           children.set(i, updatedItem);
           parentId = entry.getKey();
