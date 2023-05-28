@@ -44,9 +44,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 //    mSession = new MediaSessionCompat(this, "MediaBrowserService");
     setSessionToken(mSession.getSessionToken());
 
-    PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
-      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
-    mSession.setPlaybackState(stateBuilder.build());
+//    PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
+//      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+//    mSession.setPlaybackState(stateBuilder.build());
 
     mSession.setCallback(new MediaSessionCompat.Callback() {
       @Override
@@ -98,7 +98,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       }
     });
 
-    mSession.setActive(true);
+//    mSession.setActive(true);
   }
 
   @Override

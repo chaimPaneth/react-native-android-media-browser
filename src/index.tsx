@@ -68,19 +68,19 @@ const MediaBrowserWrapper = {
   // Method to set media items. It converts the media items to a JSON string before passing to the native module.
   setMediaItems: (items: MediaItemsStructure) => {
   const convertedItems = JSON.stringify(items);
-    MediaBrowser.setMediaItems(convertedItems);
+    MediaBrowser?.setMediaItems(convertedItems);
   },
   // Method to add a new media item. It converts the media item to a JSON string before passing to the native module.
   pushMediaItem: (parentId: string, newItem: MediaItem) => {
-    MediaBrowser.pushMediaItem(parentId, JSON.stringify(newItem));
+    MediaBrowser?.pushMediaItem(parentId, JSON.stringify(newItem));
   },
   // Method to delete a media item by its id.
   deleteMediaItem: (itemId: string) => {
-    MediaBrowser.deleteMediaItem(itemId);
+    MediaBrowser?.deleteMediaItem(itemId);
   },
   // Method to update a media item. It converts the updated media item to a JSON string before passing to the native module.
   updateMediaItem: (updatedItem: MediaItem) => {
-    MediaBrowser.updateMediaItem(JSON.stringify(updatedItem));
+    MediaBrowser?.updateMediaItem(JSON.stringify(updatedItem));
   },
   // Method to register a listener for media item selection events.
   onMediaItemSelected: (listener: EmitterSubscription) => {
@@ -104,5 +104,4 @@ const MediaBrowserWrapper = {
   },
 };
 
-// Exporting the wrapper only for android platform
-export default Platform.OS === 'android' ? MediaBrowserWrapper : null;
+export default MediaBrowserWrapper;
