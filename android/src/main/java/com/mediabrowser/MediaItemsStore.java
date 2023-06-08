@@ -13,6 +13,7 @@ import android.support.v4.media.session.MediaSessionCompat;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -140,6 +141,38 @@ public class MediaItemsStore extends NotificationListenerService {
       }
     }
     if (listener != null && parentId != null) {
+      listener.onMediaItemsUpdated(parentId);
+    }
+  }
+
+  public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {
+    if (replace) {
+      // Replace all existing items with the new list
+      mediaItemsHierarchy.put(parentId, updatedItems);
+    } else {
+      // Update existing items and add new ones
+      List<MediaBrowserCompat.MediaItem> children = mediaItemsHierarchy.get(parentId);
+      if (children == null) {
+        children = new ArrayList<>();
+        mediaItemsHierarchy.put(parentId, children);
+      }
+      Map<String, MediaBrowserCompat.MediaItem> updatedItemsMap = new HashMap<>();
+      for (MediaBrowserCompat.MediaItem updatedItem : updatedItems) {
+        updatedItemsMap.put(updatedItem.getMediaId(), updatedItem);
+      }
+      for (int i = 0; i < children.size(); i++) {
+        MediaBrowserCompat.MediaItem currentItem = children.get(i);
+        MediaBrowserCompat.MediaItem updatedItem = updatedItemsMap.get(currentItem.getMediaId());
+        if (updatedItem != null) {
+          // Replace existing item
+          children.set(i, updatedItem);
+          updatedItemsMap.remove(currentItem.getMediaId());  // Item has been updated, so remove it from the map
+        }
+      }
+      // Add any new items that were not in the original list
+      children.addAll(updatedItemsMap.values());
+    }
+    if (listener != null) {
       listener.onMediaItemsUpdated(parentId);
     }
   }

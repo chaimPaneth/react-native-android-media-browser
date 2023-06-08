@@ -22,8 +22,13 @@ import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
@@ -75,16 +80,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         sendMediaItemToJS(mediaId);
 
         // Fetch the MediaItem from the MediaItemsStore.
-        MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
-        if (mediaItem != null) {
+//        MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+//        if (mediaItem != null) {
           // Update the MediaSession's metadata.
-          mSession.setMetadata(new MediaMetadataCompat.Builder()
-            .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, mediaItem.getDescription().getMediaId())
-            .putString(MediaMetadata.METADATA_KEY_TITLE, mediaItem.getDescription().getTitle().toString())
-            .putString(MediaMetadata.METADATA_KEY_ARTIST, mediaItem.getDescription().getSubtitle().toString())
-            // Add more metadata fields as needed.
-            .build());
-        }
+//          mSession.setMetadata(new MediaMetadataCompat.Builder()
+//            .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, mediaItem.getDescription().getMediaId())
+//            .putString(MediaMetadata.METADATA_KEY_TITLE, mediaItem.getDescription().getTitle().toString())
+//            .putString(MediaMetadata.METADATA_KEY_ARTIST, mediaItem.getDescription().getSubtitle().toString())
+//            // Add more metadata fields as needed.
+//            .build());
+//        }
       }
 
       @Override
@@ -168,10 +173,46 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       if (mediaItem != null) {
         WritableMap mediaItemMap = Arguments.createMap();
         mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
-        mediaItemMap.putString("title", mediaItem.getDescription().getTitle().toString());
-        mediaItemMap.putString("subTitle", mediaItem.getDescription().getSubtitle().toString());
-        mediaItemMap.putString("icon", mediaItem.getDescription().getIconUri().toString());
-        mediaItemMap.putString("mediaUrl", mediaItem.getDescription().getExtras().getString("media_url"));
+
+        CharSequence title = mediaItem.getDescription().getTitle();
+        if (title != null) {
+          mediaItemMap.putString("title", title.toString());
+        }
+
+        CharSequence subtitle = mediaItem.getDescription().getSubtitle();
+        if (subtitle != null) {
+          mediaItemMap.putString("subTitle", subtitle.toString());
+        }
+
+        Uri iconUri = mediaItem.getDescription().getIconUri();
+        if (iconUri != null) {
+          mediaItemMap.putString("icon", iconUri.toString());
+        }
+
+        // Adding all extras
+        Bundle extras = mediaItem.getDescription().getExtras();
+        if (extras != null) {
+          WritableMap extrasMap = Arguments.createMap();
+          for (String key : extras.keySet()) {
+            Object value = extras.get(key);
+            if (value instanceof String) {
+              extrasMap.putString(key, (String) value);
+            } else if (value instanceof Integer) {
+              extrasMap.putInt(key, (Integer) value);
+            } else if (value instanceof Boolean) {
+              extrasMap.putBoolean(key, (Boolean) value);
+            }
+          }
+          mediaItemMap.putMap("extras", extrasMap);
+        }
+
+        // Add the playable or browsable flag
+        int flags = mediaItem.getFlags();
+        if ((flags & MediaBrowserCompat.MediaItem.FLAG_PLAYABLE) != 0) {
+          mediaItemMap.putString("playableOrBrowsable", "PLAYABLE");
+        } else if ((flags & MediaBrowserCompat.MediaItem.FLAG_BROWSABLE) != 0) {
+          mediaItemMap.putString("playableOrBrowsable", "BROWSABLE");
+        }
 
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);

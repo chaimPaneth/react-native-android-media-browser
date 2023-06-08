@@ -67,12 +67,11 @@ const MediaBrowserWrapper = {
   ...MediaBrowser,
   // Method to set media items. It converts the media items to a JSON string before passing to the native module.
   setMediaItems: (items: MediaItemsStructure) => {
-  const convertedItems = JSON.stringify(items);
-    MediaBrowser?.setMediaItems(convertedItems);
+    MediaBrowser?.setMediaItems(items);
   },
   // Method to add a new media item. It converts the media item to a JSON string before passing to the native module.
   pushMediaItem: (parentId: string, newItem: MediaItem) => {
-    MediaBrowser?.pushMediaItem(parentId, JSON.stringify(newItem));
+    MediaBrowser?.pushMediaItem(parentId, newItem);
   },
   // Method to delete a media item by its id.
   deleteMediaItem: (itemId: string) => {
@@ -80,7 +79,7 @@ const MediaBrowserWrapper = {
   },
   // Method to update a media item. It converts the updated media item to a JSON string before passing to the native module.
   updateMediaItem: (updatedItem: MediaItem) => {
-    MediaBrowser?.updateMediaItem(JSON.stringify(updatedItem));
+    MediaBrowser?.updateMediaItem(updatedItem);
   },
   // Method to register a listener for media item selection events.
   onMediaItemSelected: (listener: EmitterSubscription) => {
@@ -91,6 +90,11 @@ const MediaBrowserWrapper = {
       'onMediaItemSelected',
       listener,
     );
+  },
+  // Method to update multiple media items under a specific parent ID. 
+  // It converts the updated items to a JSON string before passing to the native module.
+  updateMediaItems: (parentId: string, updatedItems: MediaItem[], replace: boolean) => {
+    MediaBrowser?.updateMediaItems(parentId, updatedItems, replace);
   },
   // Method to register a listener for car connection change events.
   onCarConnectionChanged: (listener: EmitterSubscription) => {
