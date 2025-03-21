@@ -163,6 +163,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       mediaItems = new ArrayList<>();
     }
 
+    sendBrowsableItemToJS(parentMediaId);
+
     result.sendResult(mediaItems);
   }
 
@@ -217,6 +219,18 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
       }
+    }
+  }
+
+  private void sendBrowsableItemToJS(String parentMediaId) {
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    if (reactContext != null) {
+        WritableMap event = Arguments.createMap();
+        event.putString("id", parentMediaId);
+        event.putString("playableOrBrowsable", "BROWSABLE");
+
+        reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                .emit("onBrowsableItemSelected", event);
     }
   }
 }

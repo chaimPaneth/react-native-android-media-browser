@@ -60,6 +60,7 @@ interface MediaItemsStructure {
 
 // Initial setup for listeners
 let mediaItemSelectedListener: EmitterSubscription | null = null;
+let mediaItemBrowseListener: EmitterSubscription | null = null;
 let carConnectedListener: EmitterSubscription | null = null;
 
 // Wrapper for the MediaBrowser native module
@@ -82,14 +83,21 @@ const MediaBrowserWrapper = {
     MediaBrowser?.updateMediaItem(updatedItem);
   },
   // Method to register a listener for media item selection events.
-  onMediaItemSelected: (listener: EmitterSubscription) => {
-  if (mediaItemSelectedListener) {
+  onMediaItemSelected: (listener: (item: MediaItem) => void) => {
+    if (mediaItemSelectedListener) {
       mediaItemSelectedListener.remove();
     }
     mediaItemSelectedListener = DeviceEventEmitter.addListener(
       'onMediaItemSelected',
       listener,
     );
+  },
+  // Method to register a listener for browsing events.
+  onBrowsableItemSelected: (listener: (item: MediaItem) => void) => {
+    if (mediaItemBrowseListener)  {
+      mediaItemBrowseListener.remove();
+    }
+    mediaItemBrowseListener = DeviceEventEmitter.addListener('onBrowsableItemSelected', listener);
   },
   // Method to update multiple media items under a specific parent ID. 
   // It converts the updated items to a JSON string before passing to the native module.
