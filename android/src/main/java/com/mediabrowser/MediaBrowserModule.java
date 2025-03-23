@@ -6,6 +6,7 @@ import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLET
 import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS;
 import static androidx.media.utils.MediaConstants.METADATA_KEY_IS_EXPLICIT;
 
+import static com.mediabrowser.MediaArtworkContentProvider.setIconBitmapFromFresco;
 import static com.mediabrowser.MediaBrowserUtils.convertReadableMapToJson;
 
 import android.app.Activity;
@@ -324,7 +325,13 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         description.setIconUri(Uri.parse("android.resource://" + getReactApplicationContext().getPackageName() + "/" + iconResId));
       } else {
 //        Uri contentUri = asAlbumArtContentURI(iconUri);
-        description.setIconUri(iconUri);
+//        description.setIconUri(iconUri);
+        String host = iconUri.getHost();
+        if (host != null && host.equals("127.0.0.1")) {
+          setIconBitmapFromFresco(getReactApplicationContext(), description, iconUri);
+        } else {
+          description.setIconUri(iconUri);
+        }
       }
     }
 
