@@ -40,16 +40,17 @@ export const CONNECTION_TYPE_NATIVE = 1; // natively running on a head unit (And
 export const CONNECTION_TYPE_PROJECTION = 2; // connected to a car head unit by projecting to it (Android Auto).
 
 // Interface for a media item
-interface MediaItem {
-  id: string; // unique identifier for the media item
-  title: string; // title of the media item
-  subTitle: string; // subtitle of the media item
-  icon: string; // icon for the media item
+export interface MediaItem {
+  id?: string | undefined | null; // unique identifier for the media item
+  title?: string | undefined | null; // title of the media item
+  subTitle?: string | undefined | null; // subtitle of the media item
+  icon?: string | undefined | null; // icon for the media item
   playableOrBrowsable: 'PLAYABLE' | 'BROWSABLE'; // specifies if the item is directly playable or it's a container that can be browsed to reveal more media items
-  children?: MediaItem[]; // if the item is 'BROWSABLE', it can have children media items
-  groupTitle?: string; // title for the group this item belongs to
-  browsableStyle?: ContentStyle; // style to be applied when the item is displayed in a browsable context
-  playableStyle?: ContentStyle; // style to be applied when the item is displayed in a playable context
+  children?: MediaItem[] | undefined | null; // if the item is 'BROWSABLE', it can have children media items
+  groupTitle?: string | undefined | null; // title for the group this item belongs to
+  browsableStyle?: ContentStyle | undefined | null; // style to be applied when the item is displayed in a browsable context
+  playableStyle?: ContentStyle | undefined | null; // style to be applied when the item is displayed in a playable context
+  extras?: { [key: string]: string | number } | undefined | null; // extra information associated with the media item
 }
 
 // Interface for a structure of media items. It defines the hierarchy of media items.
