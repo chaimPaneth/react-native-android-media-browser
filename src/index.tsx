@@ -120,13 +120,23 @@ const MediaBrowserWrapper = {
   },
   
   // Method to register event handler for headless JS tasks
-  registerEventHandler: (handler: (data: any) => void) => {
+  registerEventHandler: (handler: (data: any) => void | Promise<void>) => {
     eventHandler = handler;
     
     // Register the headless task
-    const headlessTask = (data: any) => {
-      if (eventHandler) {
-        eventHandler(data);
+    const headlessTask = async (data: any) => {
+      try {
+        if (eventHandler) {
+          const result = eventHandler(data);
+          // If the handler returns a promise, await it
+          if (result && typeof result.then === 'function') {
+            await result;
+          }
+        }
+        return Promise.resolve();
+      } catch (error) {
+        console.error('Error in MediaBrowser headless task:', error);
+        return Promise.resolve(); // Always return a resolved promise
       }
     };
     
