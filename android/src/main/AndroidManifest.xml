@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:tools="http://schemas.android.com/tools"
   package="com.mediabrowser">
+  
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+  
     <application>
         <service
             android:name=".MediaBrowserService"
@@ -11,6 +14,19 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+        
+        <!-- Headless JS Task Service for background/killed app handling -->
+        <service
+            android:name=".MediaBrowserHeadlessService"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.mediabrowser.ACTION_MEDIA_ITEM_SELECTED" />
+                <action android:name="com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED" />
+                <action android:name="com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED" />
+            </intent-filter>
+        </service>
+        
         <provider
             android:name=".MediaArtworkContentProvider"
             android:authorities="com.mediabrowser.provider"

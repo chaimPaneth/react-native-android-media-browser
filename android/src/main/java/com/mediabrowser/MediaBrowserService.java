@@ -1,6 +1,7 @@
 package com.mediabrowser;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.media.MediaMetadata;
 import androidx.media.MediaBrowserServiceCompat;
@@ -170,67 +171,107 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
   private void sendMediaItemToJS(String mediaId) {
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
-    if (reactContext != null) {
-      MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
-      if (mediaItem != null) {
-        WritableMap mediaItemMap = Arguments.createMap();
-        mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
+    MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+    
+    if (mediaItem != null) {
+      WritableMap mediaItemMap = Arguments.createMap();
+      mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
 
-        CharSequence title = mediaItem.getDescription().getTitle();
-        if (title != null) {
-          mediaItemMap.putString("title", title.toString());
-        }
+      CharSequence title = mediaItem.getDescription().getTitle();
+      if (title != null) {
+        mediaItemMap.putString("title", title.toString());
+      }
 
-        CharSequence subtitle = mediaItem.getDescription().getSubtitle();
-        if (subtitle != null) {
-          mediaItemMap.putString("subTitle", subtitle.toString());
-        }
+      CharSequence subtitle = mediaItem.getDescription().getSubtitle();
+      if (subtitle != null) {
+        mediaItemMap.putString("subTitle", subtitle.toString());
+      }
 
-        Uri iconUri = mediaItem.getDescription().getIconUri();
-        if (iconUri != null) {
-          mediaItemMap.putString("icon", iconUri.toString());
-        }
+      Uri iconUri = mediaItem.getDescription().getIconUri();
+      if (iconUri != null) {
+        mediaItemMap.putString("icon", iconUri.toString());
+      }
 
-        // Adding all extras
-        Bundle extras = mediaItem.getDescription().getExtras();
-        if (extras != null) {
-          WritableMap extrasMap = Arguments.createMap();
-          for (String key : extras.keySet()) {
-            Object value = extras.get(key);
-            if (value instanceof String) {
-              extrasMap.putString(key, (String) value);
-            } else if (value instanceof Integer) {
-              extrasMap.putInt(key, (Integer) value);
-            } else if (value instanceof Boolean) {
-              extrasMap.putBoolean(key, (Boolean) value);
-            }
+      // Adding all extras
+      Bundle extras = mediaItem.getDescription().getExtras();
+      if (extras != null) {
+        WritableMap extrasMap = Arguments.createMap();
+        for (String key : extras.keySet()) {
+          Object value = extras.get(key);
+          if (value instanceof String) {
+            extrasMap.putString(key, (String) value);
+          } else if (value instanceof Integer) {
+            extrasMap.putInt(key, (Integer) value);
+          } else if (value instanceof Boolean) {
+            extrasMap.putBoolean(key, (Boolean) value);
           }
-          mediaItemMap.putMap("extras", extrasMap);
         }
+        mediaItemMap.putMap("extras", extrasMap);
+      }
 
-        // Add the playable or browsable flag
-        int flags = mediaItem.getFlags();
-        if ((flags & MediaBrowserCompat.MediaItem.FLAG_PLAYABLE) != 0) {
-          mediaItemMap.putString("playableOrBrowsable", "PLAYABLE");
-        } else if ((flags & MediaBrowserCompat.MediaItem.FLAG_BROWSABLE) != 0) {
-          mediaItemMap.putString("playableOrBrowsable", "BROWSABLE");
-        }
+      // Add the playable or browsable flag
+      int flags = mediaItem.getFlags();
+      if ((flags & MediaBrowserCompat.MediaItem.FLAG_PLAYABLE) != 0) {
+        mediaItemMap.putString("playableOrBrowsable", "PLAYABLE");
+      } else if ((flags & MediaBrowserCompat.MediaItem.FLAG_BROWSABLE) != 0) {
+        mediaItemMap.putString("playableOrBrowsable", "BROWSABLE");
+      }
 
+      // Send to JS if React context is available
+      if (reactContext != null) {
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
+      }
+      
+      // Trigger headless service for background/killed app scenario
+      Intent intent = new Intent(this, MediaBrowserHeadlessService.class);
+      intent.setAction(MediaBrowserHeadlessService.ACTION_MEDIA_ITEM_SELECTED);
+      intent.putExtra("id", mediaItem.getDescription().getMediaId());
+      if (title != null) {
+        intent.putExtra("title", title.toString());
+      }
+      if (subtitle != null) {
+        intent.putExtra("subTitle", subtitle.toString());
+      }
+      if (iconUri != null) {
+        intent.putExtra("icon", iconUri.toString());
+      }
+      if ((flags & MediaBrowserCompat.MediaItem.FLAG_PLAYABLE) != 0) {
+        intent.putExtra("playableOrBrowsable", "PLAYABLE");
+      } else if ((flags & MediaBrowserCompat.MediaItem.FLAG_BROWSABLE) != 0) {
+        intent.putExtra("playableOrBrowsable", "BROWSABLE");
+      }
+      
+      try {
+        startService(intent);
+      } catch (Exception e) {
+        Log.e(TAG, "Failed to start headless service", e);
       }
     }
   }
 
   private void sendBrowsableItemToJS(String parentMediaId) {
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
-    if (reactContext != null) {
-        WritableMap event = Arguments.createMap();
-        event.putString("id", parentMediaId);
-        event.putString("playableOrBrowsable", "BROWSABLE");
+    WritableMap event = Arguments.createMap();
+    event.putString("id", parentMediaId);
+    event.putString("playableOrBrowsable", "BROWSABLE");
 
+    // Send to JS if React context is available
+    if (reactContext != null) {
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit("onBrowsableItemSelected", event);
+    }
+    
+    // Trigger headless service for background/killed app scenario
+    Intent intent = new Intent(this, MediaBrowserHeadlessService.class);
+    intent.setAction(MediaBrowserHeadlessService.ACTION_BROWSABLE_ITEM_SELECTED);
+    intent.putExtra("id", parentMediaId);
+    intent.putExtra("playableOrBrowsable", "BROWSABLE");
+    
+    try {
+      startService(intent);
+    } catch (Exception e) {
+      Log.e(TAG, "Failed to start headless service for browsable item", e);
     }
   }
 }

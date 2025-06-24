@@ -273,6 +273,17 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
         .emit("onCarConnectionChanged", carState);
     }
+    
+    // Trigger headless service for background/killed app scenario
+    Intent intent = new Intent(getReactApplicationContext(), MediaBrowserHeadlessService.class);
+    intent.setAction(MediaBrowserHeadlessService.ACTION_CAR_CONNECTION_CHANGED);
+    intent.putExtra("connectionType", carState);
+    
+    try {
+      getReactApplicationContext().startService(intent);
+    } catch (Exception e) {
+      Log.e(TAG, "Failed to start headless service for car connection", e);
+    }
   }
 
   private Map<String, List<MediaBrowserCompat.MediaItem>> buildMediaItemsHierarchy(ReadableMap itemsMap) throws Exception {
@@ -414,5 +425,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       default:
         return -1;
     }
+  }
+  
+  @ReactMethod
+  public void registerEventHandler() {
+    // This method is used to register the headless task event handler
+    // The actual event handling is done in the HeadlessJsTaskService
+    Log.d(TAG, "Event handler registered for MediaBrowser headless tasks");
   }
 }

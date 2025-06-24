@@ -1,7 +1,10 @@
-import { NativeModules, Platform, DeviceEventEmitter, EmitterSubscription } from 'react-native';
+import { NativeModules, DeviceEventEmitter, EmitterSubscription, AppRegistry } from 'react-native';
 
 // Accessing the native MediaBrowser module
 const { MediaBrowser } = NativeModules;
+
+// Store for the event handler function
+let eventHandler: ((data: any) => void) | null = null;
 
 // Constants defining different content styles.
 // They might change the way how media items are displayed in the UI (as a list, grid, etc.)
@@ -115,6 +118,26 @@ const MediaBrowserWrapper = {
       listener,
     );
   },
+  
+  // Method to register event handler for headless JS tasks
+  registerEventHandler: (handler: (data: any) => void) => {
+    eventHandler = handler;
+    
+    // Register the headless task
+    const headlessTask = (data: any) => {
+      if (eventHandler) {
+        eventHandler(data);
+      }
+    };
+    
+    AppRegistry.registerHeadlessTask('MediaBrowserService', () => headlessTask);
+    
+    // Call native method to enable headless task registration
+    MediaBrowser?.registerEventHandler();
+  },
 };
 
 export default MediaBrowserWrapper;
+
+// Export the registerEventHandler function separately for easier access
+export const { registerEventHandler } = MediaBrowserWrapper;
