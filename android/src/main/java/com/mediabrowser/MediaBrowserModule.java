@@ -11,6 +11,7 @@ import static com.mediabrowser.MediaBrowserUtils.convertReadableMapToJson;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.Intent;
 import android.media.MediaDescription;
 import android.net.Uri;
 import android.os.Bundle;
