@@ -3,9 +3,12 @@ package com.mediabrowser;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.support.v4.content.LocalBroadcastManager;
-import android.support.v4.media.session.MediaButtonReceiver;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+import androidx.media.session.MediaButtonReceiver;
 import android.util.Log;
+
+import com.facebook.react.ReactApplication;
+import com.facebook.react.ReactNativeHost;
 
 import com.facebook.react.HeadlessJsTaskService;
 import com.facebook.react.bridge.Arguments;
@@ -13,6 +16,12 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.jstasks.HeadlessJsTaskConfig;
 
 import javax.annotation.Nullable;
+
+import android.os.Build;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import androidx.core.app.NotificationCompat;
 
 /**
  * HeadlessJsTaskService for MediaBrowser to handle events when app is in background or killed state
@@ -25,11 +34,11 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     public static final String ACTION_BROWSABLE_ITEM_SELECTED = "com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED";
     public static final String ACTION_CAR_CONNECTION_CHANGED = "com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED";
 
+    private static final int NOTIFICATION_ID_MEDIA_BROWSER = 1;
+
     @Nullable
     @Override
     protected HeadlessJsTaskConfig getTaskConfig(Intent intent) {
-        Log.d(TAG, "getTaskConfig called with intent: " + (intent != null ? intent.getAction() : "null"));
-        
         if (intent == null) {
             return null;
         }
@@ -78,11 +87,9 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                     }
                     break;
                 default:
-                    Log.w(TAG, "Unknown action: " + action);
                     return null;
             }
         } else {
-            Log.w(TAG, "Intent action is null");
             return null;
         }
         
@@ -92,7 +99,6 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public void onHeadlessJsTaskFinish(int taskId) {
-        Log.d(TAG, "onHeadlessJsTaskFinish called with taskId: " + taskId);
         // Overridden to prevent the service from being terminated immediately
         // This allows the service to continue running for Android Auto connectivity
     }
@@ -105,8 +111,26 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.d(TAG, "onStartCommand called with action: " + (intent != null ? intent.getAction() : "null"));
-        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    "media_browser_channel",
+                    "MediaBrowser Background Service",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+
+            Notification notification = new NotificationCompat.Builder(this, "media_browser_channel")
+                    .setContentTitle("MediaBrowser Service")
+                    .setContentText("Android Auto integration running")
+                    .build();
+
+            startForeground(NOTIFICATION_ID_MEDIA_BROWSER, notification);
+        }
+
         if (intent != null) {
             String action = intent.getAction();
             if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) || 
@@ -122,7 +146,6 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     
     @Override
     public void onDestroy() {
-        Log.d(TAG, "MediaBrowserHeadlessService destroyed");
         super.onDestroy();
     }
 }
