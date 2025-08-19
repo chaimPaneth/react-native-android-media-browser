@@ -176,8 +176,19 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
           if (item.hasKey("description")) {
             descriptionBuilder.setDescription(item.getString("description"));
           }
-          if (item.hasKey("iconUri")) {
-            descriptionBuilder.setIconUri(Uri.parse(item.getString("iconUri")));
+
+          // Handle icon with modern validation, fallback to legacy
+          if (item.hasKey("icon")) {
+            applyIconWithValidation(item, descriptionBuilder);
+          } else if (item.hasKey("iconUri")) {
+            String iconUri = item.getString("iconUri");
+            if (iconUri != null && !iconUri.trim().isEmpty()) {
+              try {
+                descriptionBuilder.setIconUri(Uri.parse(iconUri));
+              } catch (Exception e) {
+                Log.w(TAG, "Invalid iconUri provided: " + iconUri, e);
+              }
+            }
           }
 
           ReadableMap itemExtras = item.hasKey("extras") ? item.getMap("extras") : null;
@@ -330,22 +341,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       description.setSubtitle(itemMap.getString("subTitle"));
     }
 
-    if (itemMap.hasKey("icon")) {
-      Uri iconUri = Uri.parse(itemMap.getString("icon"));
-      if ("res".equals(iconUri.getScheme())) {
-        int iconResId = getReactApplicationContext().getResources().getIdentifier(iconUri.getHost() + ":" + iconUri.getPath(), "drawable", getReactApplicationContext().getPackageName());
-        description.setIconUri(Uri.parse("android.resource://" + getReactApplicationContext().getPackageName() + "/" + iconResId));
-      } else {
-//        Uri contentUri = asAlbumArtContentURI(iconUri);
-//        description.setIconUri(iconUri);
-        String host = iconUri.getHost();
-        if (host != null && host.equals("127.0.0.1")) {
-          setIconBitmapFromFresco(getReactApplicationContext(), description, iconUri);
-        } else {
-          description.setIconUri(iconUri);
-        }
-      }
-    }
+    // Validate and apply icon (production-clean: no debug bundle)
+    applyIconWithValidation(itemMap, description);
 
     Bundle extras = new Bundle();
     if (itemMap.hasKey("browsableStyle")) {
@@ -405,11 +402,132 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     return new MediaBrowserCompat.MediaItem(description.build(), flags);
   }
 
+  /**
+   * Validates the incoming icon and applies it to the description.
+   * For http/https and 127.0.0.1 hosts, we embed a Bitmap via Fresco (AA-friendly).
+   * For res: scheme, we map to android.resource://<pkg>/<id>.
+   * For content:// and android.resource:// we pass through.
+   * Otherwise, we fall back to a debug icon.
+   * Returns a Bundle with debug fields about what happened.
+   */
+  private void applyIconWithValidation(ReadableMap itemMap, MediaDescriptionCompat.Builder description) {
+    if (itemMap == null || !itemMap.hasKey("icon")) {
+      return; // no icon provided
+    }
+
+    String iconStr = itemMap.getString("icon");
+    if (iconStr == null || iconStr.trim().isEmpty()) {
+      return; // empty icon
+    }
+
+    try {
+      ReactApplicationContext context = getReactApplicationContext();
+      Uri iconUri = Uri.parse(iconStr);
+      String scheme = iconUri.getScheme();
+      String host = iconUri.getHost();
+
+      // 1) res: -> android.resource:// mapping
+      if ("res".equalsIgnoreCase(scheme)) {
+        String resName = iconUri.getLastPathSegment(); // e.g., "home"
+        if (resName != null && !resName.isEmpty()) {
+          int iconResId = context.getResources().getIdentifier(resName, "drawable", context.getPackageName());
+          if (iconResId == 0) {
+            iconResId = context.getResources().getIdentifier(resName, "mipmap", context.getPackageName());
+          }
+          if (iconResId != 0) {
+            description.setIconUri(Uri.parse("android.resource://" + context.getPackageName() + "/" + iconResId));
+          }
+        }
+        return;
+      }
+
+      // 2) content:// and android.resource:// passthrough
+      if (ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(scheme) || "android.resource".equalsIgnoreCase(scheme)) {
+        description.setIconUri(iconUri);
+        return;
+      }
+
+      // 3) Network / LAN (Metro and remote)
+      boolean isNetwork = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+      boolean isLocalhostOrLan = host != null && (
+        "127.0.0.1".equals(host) ||
+        "localhost".equals(host) ||
+        host.startsWith("10.") ||
+        host.startsWith("192.168.") ||
+        (host.startsWith("172.") && is172PrivateSecondOctet(host)) // 172.16–172.31
+      );
+
+      if (isNetwork || isLocalhostOrLan) {
+        // 3a) Try to map Metro packager assets: unstable_path=.../<name>@3x.png -> R.drawable.<name>
+        try {
+          String query = iconUri.getQuery();
+          if (query != null) {
+            String marker = "unstable_path=";
+            int idx = query.indexOf(marker);
+            if (idx != -1) {
+              String after = query.substring(idx + marker.length());
+              try { 
+                after = java.net.URLDecoder.decode(after, "UTF-8"); 
+              } catch (Exception e) {}
+
+              int slash = Math.max(after.lastIndexOf('/'), after.lastIndexOf('\\'));
+              String fileName = slash >= 0 ? after.substring(slash + 1) : after; // e.g., home@3x.png
+
+              if (!fileName.isEmpty()) {
+                int dot = fileName.lastIndexOf('.');
+                String base = dot >= 0 ? fileName.substring(0, dot) : fileName;  // home@3x
+                String resName = base.replaceFirst("@\\d+x$", "");                    // home
+
+                String pkg = context.getPackageName();
+                int resId = context.getResources().getIdentifier(resName, "drawable", pkg);
+                if (resId == 0) {
+                  resId = context.getResources().getIdentifier(resName, "mipmap", pkg);
+                }
+                if (resId != 0) {
+                  Uri resUri = Uri.parse("android.resource://" + pkg + "/" + resId);
+                  description.setIconUri(resUri);
+                  return;
+                }
+              }
+            }
+          }
+        } catch (Exception e) {}
+
+        // 3b) Prefer ContentProvider and also set an eager bitmap so AA can render immediately
+        try {
+          Uri contentUri = asAlbumArtContentURI(iconUri);
+          description.setIconUri(contentUri);
+          setIconBitmapFromFresco(context, description, iconUri);
+          return;
+        } catch (Exception e) {}
+
+        // 3c) Fallback: embed bitmap only
+        try {
+          setIconBitmapFromFresco(context, description, iconUri);
+        } catch (Exception e) {}
+      }
+
+      // 4) Unsupported/unknown scheme: do nothing (no debug icon in production)
+    } catch (Exception e) {}
+  }
+
+  // Helper: 172.16–172.31.*
+  private static boolean is172PrivateSecondOctet(String host) {
+    String[] parts = host.split("\\.");
+    if (parts.length < 2) return false;
+    try {
+      int second = Integer.parseInt(parts[1]);
+      return second >= 16 && second <= 31;
+    } catch (NumberFormatException e) {
+      return false;
+    }
+  }
+
   public static Uri asAlbumArtContentURI(Uri webUri) {
     return new Uri.Builder()
       .scheme(ContentResolver.SCHEME_CONTENT)
       .authority(MediaArtworkContentProvider.CONTENT_PROVIDER_AUTHORITY)
-      .appendPath(webUri.getPath()) // Make sure you trust the URI!
+      .appendQueryParameter("url", webUri.toString())
       .build();
   }
 
