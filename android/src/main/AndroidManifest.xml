@@ -27,9 +27,5 @@
             </intent-filter>
         </service>
         
-        <provider
-            android:name=".MediaArtworkContentProvider"
-            android:authorities="com.mediabrowser.provider"
-            android:exported="false" />
     </application>
 </manifest>
