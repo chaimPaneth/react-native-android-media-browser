@@ -33,7 +33,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 public class MediaArtworkContentProvider extends ContentProvider {
-  public static final String CONTENT_PROVIDER_AUTHORITY = "com.mediabrowser.provider";
+  public static String CONTENT_PROVIDER_AUTHORITY = "com.mediabrowser.provider";
   private static final int DOWNLOAD_TIMEOUT_SECONDS = 30;
 
   private static final Map<Uri, Uri> uriMap = new HashMap<>();
@@ -47,7 +47,7 @@ public class MediaArtworkContentProvider extends ContentProvider {
     }
     Uri contentUri = new Uri.Builder()
       .scheme(ContentResolver.SCHEME_CONTENT)
-      .authority("com.mediabrowser.provider")
+      .authority(CONTENT_PROVIDER_AUTHORITY)
       .path(path)
       .build();
     uriMap.put(contentUri, uri);
@@ -56,6 +56,18 @@ public class MediaArtworkContentProvider extends ContentProvider {
 
   @Override
   public boolean onCreate() {
+    // Try to get the authority from string resources or use default
+    try {
+      Context context = getContext();
+      if (context != null) {
+        int resId = context.getResources().getIdentifier("media_browser_authority", "string", context.getPackageName());
+        if (resId != 0) {
+          CONTENT_PROVIDER_AUTHORITY = context.getString(resId);
+        }
+      }
+    } catch (Exception e) {
+      // Use default authority if configuration fails
+    }
     return true;
   }
 
