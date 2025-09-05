@@ -33,6 +33,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.ReadableType;
 import com.facebook.react.bridge.UiThreadUtil;
 import com.facebook.react.bridge.WritableNativeMap;
 import com.facebook.react.module.annotations.ReactModule;
@@ -203,6 +204,39 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
             if (itemExtras.hasKey(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE)) {
               extras.putDouble(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE, itemExtras.getDouble(DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE));
             }
+            // Allow updating the "info" JSON directly (string or map) — MERGE, don't replace
+            if (itemExtras.hasKey("info")) {
+              try {
+                // Parse existing info JSON (if any)
+                String existingInfoStr = extras.getString("info");
+                JSONObject baseInfo;
+                try {
+                  baseInfo = existingInfoStr != null ? new JSONObject(existingInfoStr) : new JSONObject();
+                } catch (Exception ignore) {
+                  baseInfo = new JSONObject();
+                }
+
+                // Parse incoming updates (string or map)
+                JSONObject updateInfo = new JSONObject();
+                if (itemExtras.getType("info") == ReadableType.Map) {
+                  ReadableMap infoMap = itemExtras.getMap("info");
+                  if (infoMap != null) {
+                    updateInfo = convertReadableMapToJson(infoMap);
+                  }
+                } else if (itemExtras.getType("info") == ReadableType.String) {
+                  String infoStr = itemExtras.getString("info");
+                  if (infoStr != null) {
+                    try { updateInfo = new JSONObject(infoStr); } catch (Exception ignored) {}
+                  }
+                }
+
+                // Shallow-merge: new values override existing keys, others are kept
+                JSONObject merged = mergeJsonObjects(baseInfo, updateInfo);
+                extras.putString("info", merged.toString());
+              } catch (Exception e) {
+                Log.w(TAG, "Failed to merge extras.info from itemExtras", e);
+              }
+            }
             descriptionBuilder.setExtras(extras);
           }
 
@@ -222,6 +256,22 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       e.printStackTrace();
       promise.reject("ERR_UPDATE_MEDIA_ITEM", e.getMessage(), e);
     }
+  }
+
+  // Shallow-merge: values from "updates" overwrite or extend "base"
+  private static JSONObject mergeJsonObjects(JSONObject base, JSONObject updates) {
+    if (base == null) base = new JSONObject();
+    if (updates == null) return base;
+    try {
+      java.util.Iterator<String> it = updates.keys();
+      while (it.hasNext()) {
+        String k = it.next();
+        Object v = updates.opt(k);
+        // Shallow merge only; nested objects are replaced as a whole
+        base.put(k, v);
+      }
+    } catch (Exception ignored) {}
+    return base;
   }
 
   @ReactMethod
