@@ -258,7 +258,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 
             case "onSeekTo":
                 java.lang.reflect.Method seekMethod = helperClass.getMethod("handleSeekTo", long.class);
-                Boolean seekResult = (Boolean) seekMethod.invoke(null, Long.parseLong(param1));
+                Boolean seekResult = (Boolean) seekMethod.invoke(null, Long.parseLong(param1)); // param1 - position
                 return seekResult != null && seekResult;
                 
             default:
@@ -268,6 +268,53 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     } catch (Exception e) {
         Log.w(TAG, "Could not delegate to RNJWMediaSessionHelper: " + e.getMessage());
         return false;
+    }
+  }
+
+  public static void updateSeekPosition(String mediaId, long positionMs) {
+    if (mediaId == null) { return; }
+
+    try {
+      // Obtain a ReactContext the same way your service already does for other events.
+      MediaItemsStore store = MediaItemsStore.getInstance();
+      ReactContext reactContext = store.getReactApplicationContext();
+      
+      // Convert to seconds (what you want to store and emit)
+      int positionSec = (int) (positionMs / 1000L);
+
+      if (reactContext != null && reactContext.hasActiveCatalystInstance()) {
+        WritableMap event = Arguments.createMap();
+        event.putString("type", "media-seek");
+        // event.putString("mediaId", mediaId);
+        event.putString("mediaId", mediaId);
+        // event.putString("mediaId", "123456"); mediaId should look numeric
+        event.putInt("position", positionSec); // seconds
+        reactContext
+          .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+          .emit("MediaBrowserEvent", event);
+
+        try { 
+          android.content.Context ctx = (reactContext != null) ? reactContext.getApplicationContext() : null; 
+          if (ctx != null) { 
+            android.content.Intent intent = new android.content.Intent(ctx, MediaBrowserHeadlessService.class); 
+            
+            // Reuse existing action to ensure service starts 
+            intent.setAction(MediaBrowserHeadlessService.ACTION_MEDIA_ITEM_SELECTED); 
+            intent.putExtra("type", "media-seek"); 
+            intent.putExtra("mediaId", mediaId); 
+            intent.putExtra("position", positionSec);
+            ctx.startService(intent); 
+          } else { 
+            Log.d("MediaBrowserService", "reportSeekFromNative: no Context to start headless service"); 
+          } 
+        } catch (Throwable t) { 
+          Log.w("MediaBrowserService", "reportSeekFromNative: failed to start headless service for seek", t); 
+        }
+      } else {
+        Log.d("MediaBrowserService", "reportSeekFromNative: ReactContext not available");
+      }
+    } catch (Throwable t) {
+      Log.w("MediaBrowserService", "reportSeekFromNative failed", t);
     }
   }
 
