@@ -11,8 +11,10 @@ import static com.mediabrowser.MediaBrowserUtils.convertReadableMapToJson;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.media.MediaDescription;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -51,6 +53,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
+
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.resource.bitmap.CenterCrop;
 
 @ReactModule(name = MediaBrowserModule.NAME)
 public class MediaBrowserModule extends ReactContextBaseJavaModule {
@@ -276,8 +282,6 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void updateMediaItems(String parentId, ReadableArray updatedItemsArray, boolean replace, Promise promise) {
-    Log.d(TAG, "updateMediaItems called: " + updatedItemsArray);
-
     if (updatedItemsArray == null) {
       Log.e(TAG, "updateMediaItems called with null updatedItems");
       promise.reject("ERR_NULL_UPDATED_ITEMS", "updatedItemsArray was null");
@@ -475,6 +479,49 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       Uri iconUri = Uri.parse(iconStr);
       String scheme = iconUri.getScheme();
       String host = iconUri.getHost();
+
+      // 0) No scheme provided (e.g., "ic_launcher_round"): treat as resource name
+      if (scheme == null || scheme.trim().isEmpty()) {
+        try {
+          String resName = iconStr;
+          if (resName != null) {
+            // Normalize common prefixes like @drawable/, drawable/, @mipmap/, mipmap/
+            if (resName.startsWith("@")) resName = resName.substring(1);
+            if (resName.startsWith("drawable/")) resName = resName.substring("drawable/".length());
+            if (resName.startsWith("mipmap/")) resName = resName.substring("mipmap/".length());
+
+            int iconResId = context.getResources().getIdentifier(resName, "drawable", context.getPackageName());
+            if (iconResId == 0) {
+              iconResId = context.getResources().getIdentifier(resName, "mipmap", context.getPackageName());
+            }
+            if (iconResId != 0) {
+              Uri resUri = Uri.parse("android.resource://" + context.getPackageName() + "/" + iconResId);
+              // Embed bitmap for hosts that ignore URIs
+              try {
+                Bitmap bmp = Glide.with(context)
+                  .asBitmap()
+                  .load(iconResId)
+                  .transform(new CenterCrop())
+                  .override(384, 384)
+                  .submit()
+                  .get(10, TimeUnit.SECONDS);
+                description.setIconBitmap(bmp);
+              } catch (Throwable t) { }
+
+              // Also provide content:// via our provider for hosts that prefer URIs
+              try {
+                Uri contentUri = MediaArtworkContentProvider.asAlbumArtContentURI(context, resUri);
+                description.setIconUri(contentUri);
+              } catch (Throwable t) {
+                description.setIconUri(resUri);
+              }
+              // Handled
+              return;
+            } else { }
+          }
+        } catch (Throwable t) { }
+        // If not resolvable, fall through to other handlers (will likely do nothing)
+      }
 
       // 1) res: -> android.resource:// mapping
       if ("res".equalsIgnoreCase(scheme)) {

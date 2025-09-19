@@ -38,6 +38,24 @@ public class MediaArtworkContentProvider extends ContentProvider {
 
   private static final Map<Uri, Uri> uriMap = new HashMap<>();
 
+  public static String getAuthority(Context context) { 
+    try { 
+      int resId = context.getResources() 
+                          .getIdentifier("media_browser_authority", "string", context.getPackageName()); 
+      if (resId != 0) return context.getString(resId); 
+    } catch (Exception ignored) {} // Safe default derived from appId to avoid collisions 
+    
+    return context.getPackageName() + ".mediabrowser.provider"; 
+  }
+
+  public static android.net.Uri asAlbumArtContentURI(android.content.Context context, android.net.Uri webUri) { 
+    return new android.net.Uri.Builder() 
+      .scheme(android.content.ContentResolver.SCHEME_CONTENT) 
+      .authority(getAuthority(context)) 
+      .appendQueryParameter("url", webUri.toString()) 
+      .build(); 
+  }
+
   public static Uri mapUri(Uri uri) {
     String path = uri.getEncodedPath();
     if (path != null) {
@@ -191,4 +209,3 @@ public class MediaArtworkContentProvider extends ContentProvider {
     return src;
   }
 }
-
