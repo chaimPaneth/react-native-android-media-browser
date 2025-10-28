@@ -166,6 +166,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         if (existingMediaItem != null) {
           MediaDescriptionCompat oldDescription = existingMediaItem.getDescription();
 
+          Bitmap oldIconBitmap = oldDescription.getIconBitmap();
+
           MediaDescriptionCompat.Builder descriptionBuilder = new MediaDescriptionCompat.Builder();
           descriptionBuilder.setMediaId(oldDescription.getMediaId())
             .setTitle(oldDescription.getTitle())
@@ -173,6 +175,11 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
             .setDescription(oldDescription.getDescription())
             .setIconUri(oldDescription.getIconUri())
             .setExtras(oldDescription.getExtras());
+
+          // Preserve previous bitmap to avoid artwork loss when only extras change
+          if (oldIconBitmap != null) {
+            descriptionBuilder.setIconBitmap(oldIconBitmap);
+          }
 
           if (item.hasKey("title")) {
             descriptionBuilder.setTitle(item.getString("title"));
