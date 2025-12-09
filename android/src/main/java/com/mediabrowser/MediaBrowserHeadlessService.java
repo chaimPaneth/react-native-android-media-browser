@@ -12,8 +12,11 @@ import com.facebook.react.ReactNativeHost;
 
 import com.facebook.react.HeadlessJsTaskService;
 import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.jstasks.HeadlessJsTaskConfig;
+import com.facebook.react.jstasks.HeadlessJsTaskContext;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import javax.annotation.Nullable;
 
@@ -23,18 +26,16 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import androidx.core.app.NotificationCompat;
 
-/**
- * HeadlessJsTaskService for MediaBrowser to handle events when app is in background or killed state
- * Compatible with React Native New Architecture
- */
 public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
-    private static final String TAG = "MediaBrowserHeadless";
+    private static final String TAG = "MediaBrowserHeadlessService";
     public static final String ACTION_MEDIA_ITEM_SELECTED = "com.mediabrowser.ACTION_MEDIA_ITEM_SELECTED";
     public static final String ACTION_BROWSABLE_ITEM_SELECTED = "com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED";
     public static final String ACTION_CAR_CONNECTION_CHANGED = "com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED";
 
     private static final int NOTIFICATION_ID_MEDIA_BROWSER = 1;
+    private static long lastEventEmitTime = 0;
+    private static final long EVENT_THROTTLE_MS = 5000;
 
     @Nullable
     @Override
@@ -99,8 +100,8 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public void onHeadlessJsTaskFinish(int taskId) {
-        // Overridden to prevent the service from being terminated immediately
-        // This allows the service to continue running for Android Auto connectivity
+        super.onHeadlessJsTaskFinish(taskId);
+        stopSelf(taskId);
     }
 
     @Nullable
@@ -111,41 +112,77 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    "media_browser_channel",
-                    "MediaBrowser Background Service",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-
-            Notification notification = new NotificationCompat.Builder(this, "media_browser_channel")
-                    .setContentTitle("MediaBrowser Service")
-                    .setContentText("Android Auto integration running")
-                    .build();
-
-            startForeground(NOTIFICATION_ID_MEDIA_BROWSER, notification);
-        }
+        createNotificationChannel();
+        startForeground(NOTIFICATION_ID_MEDIA_BROWSER, createNotification());
 
         if (intent != null) {
             String action = intent.getAction();
-            if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) || 
+            if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) ||
                                   action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
                                   action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
-                super.onStartCommand(intent, flags, startId);
-                return START_STICKY;
+                ReactContext existingContext = MediaItemsStore.getInstance().getReactApplicationContext();
+
+                if (existingContext != null && existingContext.hasActiveReactInstance()) {
+                    try {
+                        long currentTime = System.currentTimeMillis();
+                        long timeSinceLastEvent = currentTime - lastEventEmitTime;
+
+                        if (timeSinceLastEvent >= EVENT_THROTTLE_MS) {
+                            HeadlessJsTaskConfig taskConfig = getTaskConfig(intent);
+                            if (taskConfig != null) {
+                                existingContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                                    .emit("AndroidAutoHeadlessTask", taskConfig.getData());
+                                lastEventEmitTime = currentTime;
+                            }
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error emitting event", e);
+                    }
+
+                    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            stopSelf();
+                        }
+                    }, 1000);
+                } else {
+                    super.onStartCommand(intent, flags, startId);
+                }
             }
         }
         
         return START_NOT_STICKY;
     }
-    
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                "MediaBrowserHeadless",
+                "Media Browser Background",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Handles Android Auto connection in background");
+            channel.setShowBadge(false);
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager != null) {
+                notificationManager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private Notification createNotification() {
+        return new NotificationCompat.Builder(this, "MediaBrowserHeadless")
+            .setContentTitle("Android Auto")
+            .setContentText("Initializing...")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(false)
+            .build();
+    }
+
     @Override
     public void onDestroy() {
+        stopForeground(true);
         super.onDestroy();
     }
 }

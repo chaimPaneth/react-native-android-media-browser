@@ -51,6 +51,10 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void setRootId(String rootId) {
     this.rootId = rootId;
+    // Notify listener when root is set - triggers Android Auto refresh
+    if (listener != null && rootId != null) {
+      listener.onMediaItemsUpdated(rootId);
+    }
   }
 
   public String getRootId() {
@@ -185,5 +189,15 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void setListener(MediaItemsUpdateListener listener) {
     this.listener = listener;
+  }
+
+  /**
+   * Clear all data from the store
+   * Used when recovering from force-stop or cold start
+   */
+  public void clearAllData() {
+    mediaItemsHierarchy.clear();
+    rootId = null;
+    reactContext = null;
   }
 }

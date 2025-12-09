@@ -101,8 +101,13 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       @Override
       public void run() {
         if (isReactNativeReady && carConnection == null) {
+          Activity currentActivity = reactContext.getCurrentActivity();
+          if (currentActivity == null) {
+            return;
+          }
+
           carConnection = new CarConnection(reactContext);
-          carConnection.getType().observe((LifecycleOwner) reactContext.getCurrentActivity(), new Observer<Integer>() {
+          carConnection.getType().observe((LifecycleOwner) currentActivity, new Observer<Integer>() {
             @Override
             public void onChanged(Integer connectionType) {
               sendCarConnectionToJS(connectionType);

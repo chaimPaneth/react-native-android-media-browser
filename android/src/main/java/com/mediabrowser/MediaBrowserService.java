@@ -18,6 +18,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import androidx.core.app.NotificationCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
@@ -49,6 +50,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   @Override
   public void onCreate() {
     super.onCreate();
+
+    // Check if this is a fresh start after force-stop
+    boolean isColdStart = MediaItemsStore.getInstance().getReactApplicationContext() == null;
+
+    if (isColdStart) {
+        MediaItemsStore.getInstance().clearAllData();
+    }
 
     MediaItemsStore.getInstance().setListener(this);
 
@@ -210,7 +218,86 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     
     // Create notification channel for media playback
     createNotificationChannel();
-    
+
+    // Start as foreground service immediately to allow launching Activity on Android 12+
+    // This is critical after force-stop when React context isn't available yet
+    try {
+      Intent activityIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+      PendingIntent pendingIntent = null;
+      if (activityIntent != null) {
+        activityIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        pendingIntent = PendingIntent.getActivity(this, 0, activityIntent,
+          PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+      }
+
+      String appName = getApplicationInfo().loadLabel(getPackageManager()).toString();
+      
+      NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle(appName)
+        .setContentText("Android Auto is ready")
+        .setSmallIcon(android.R.drawable.ic_media_play)
+        .setStyle(new MediaStyle().setMediaSession(mSession.getSessionToken()))
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .setPriority(NotificationCompat.PRIORITY_LOW)
+        .setOngoing(true);
+
+      if (pendingIntent != null) {
+        builder.setContentIntent(pendingIntent);
+      }
+
+      Notification notification = builder.build();
+
+      // Android 14+ (API 34+) requires specifying the foreground service type
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+      } else {
+        startForeground(NOTIFICATION_ID, notification);
+      }
+
+      // CRITICAL: After force-stop, React Native MUST be initialized WITHOUT launching MainActivity
+      // Android 12+ blocks background activity launches, so we initialize React directly
+      // This is how YouTube Music works - no Activity launch, just React context creation
+      boolean hasReactContext = MediaItemsStore.getInstance().getReactApplicationContext() != null;
+
+      if (!hasReactContext) {
+        try {
+          // Initialize React Native without launching Activity (YouTube Music approach)
+          // Get the Application which implements ReactApplication
+          android.app.Application app = getApplication();
+
+          // Access ReactNativeHost via reflection to avoid compile-time dependency
+          java.lang.reflect.Method getReactNativeHostMethod = app.getClass().getMethod("getReactNativeHost");
+          final Object reactNativeHost = getReactNativeHostMethod.invoke(app);
+
+          if (reactNativeHost != null) {
+            // Get or create ReactInstanceManager from ReactNativeHost
+            java.lang.reflect.Method getReactInstanceManagerMethod = reactNativeHost.getClass().getMethod("getReactInstanceManager");
+            final Object reactInstanceManager = getReactInstanceManagerMethod.invoke(reactNativeHost);
+
+            if (reactInstanceManager != null) {
+              // Check if React context already exists or needs to be created
+              java.lang.reflect.Method hasStartedMethod = reactInstanceManager.getClass().getMethod("hasStartedCreatingInitialContext");
+              Boolean hasStarted = (Boolean) hasStartedMethod.invoke(reactInstanceManager);
+
+              if (!hasStarted) {
+                // Create ReactContext - this initializes React AND loads JS bundle
+                java.lang.reflect.Method createReactContextMethod = reactInstanceManager.getClass().getMethod("createReactContextInBackground");
+                createReactContextMethod.invoke(reactInstanceManager);
+              }
+            } else {
+              Log.w(TAG, "[MediaBrowserService.onCreate] ReactInstanceManager was null");
+            }
+          } else {
+            Log.w(TAG, "[MediaBrowserService.onCreate] ReactNativeHost was null");
+          }
+        } catch (Exception e) {
+          Log.e(TAG, "[MediaBrowserService.onCreate] Failed to initialize React Native headlessly", e);
+        }
+      }
+    } catch (Exception e) {
+      Log.e(TAG, "Failed to start foreground service", e);
+    }
+
     setSessionToken(mSession.getSessionToken());
   }
   
@@ -359,17 +446,95 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
   }
 
+  /**
+   * Poll for data with exponential backoff
+   */
+  private void pollForData(@NonNull final Result<List<MediaBrowserCompat.MediaItem>> result,
+                          String parentMediaId, int attempt, long maxWaitMs, long startTime) {
+    // Calculate delay: 500ms, 1s, 2s, 3s, 4s...
+    long delay = attempt == 0 ? 500 : Math.min(attempt * 1000L, 4000);
+
+    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+        try {
+            ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+            List<MediaBrowserCompat.MediaItem> mediaItems = MediaItemsStore.getInstance()
+                .getMediaItemsByParentId(parentMediaId);
+
+            boolean hasData = mediaItems != null && !mediaItems.isEmpty();
+            // IMPORTANT: Match onLoadChildren logic - only check if context exists
+            // Don't check hasActiveCatalystInstance() - too strict during async JS bundle loading
+            boolean hasContext = reactContext != null;
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            if (hasData || elapsed >= maxWaitMs) {
+                // Success or timeout - send whatever we have
+                if (mediaItems == null) {
+                    mediaItems = new ArrayList<>();
+                }
+
+                if (mediaItems.isEmpty() && !hasContext) {
+                    Log.w(TAG, "[MediaBrowserService.pollForData] No data after " + elapsed + "ms - launching app as fallback");
+                    try {
+                        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                        if (launchIntent != null) {
+                            launchIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+                            // Use PendingIntent which is more reliable from a Service on Android 12+
+                            PendingIntent pendingIntent = PendingIntent.getActivity(
+                                this,
+                                0,
+                                launchIntent,
+                                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                            );
+                            pendingIntent.send();
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "[MediaBrowserService.pollForData] Failed to launch Activity", e);
+                    }
+                }
+
+                result.sendResult(mediaItems);
+            } else {
+                // Keep polling
+                pollForData(result, parentMediaId, attempt + 1, maxWaitMs, startTime);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[MediaBrowserService.pollForData] Error polling for data", e);
+            result.sendResult(new ArrayList<>());
+        }
+    }, delay);
+  }
+
   @Override
   public BrowserRoot onGetRoot(@NonNull String clientPackageName,
                                int clientUid,
                                @Nullable Bundle rootHints) {
     String rootId = MediaItemsStore.getInstance().getRootId();
-    return rootId != null ? new BrowserRoot(rootId, null) : null;
+    // Always return a root, even if empty - use default ROOT if rootId is null
+    // This prevents Android Auto from showing "doesn't seem to be working" error
+    String finalRootId = rootId != null ? rootId : MEDIA_ROOT_ID;
+    return new BrowserRoot(finalRootId, null);
   }
 
   @Override
   public void onLoadChildren(@NonNull final String parentMediaId,
                              @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
+    // Check if React context is available
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    // IMPORTANT: Only check if context exists, not if JS bundle is loaded
+    // After force-stop, React initializes headlessly and JS bundle loads async
+    // Checking hasActiveCatalystInstance() is too strict - context exists but JS still loading
+    if (reactContext == null) {
+        // Detach result to allow async processing
+        result.detach();
+
+        // Poll for data with progressive backoff
+        long startTime = System.currentTimeMillis();
+        pollForData(result, parentMediaId, 0, 15000, startTime); // Poll for up to 15 seconds
+
+        return;
+    }
+
     List<MediaBrowserCompat.MediaItem> mediaItems = MediaItemsStore.getInstance().getMediaItemsByParentId(parentMediaId);
 
     if (mediaItems == null) {
