@@ -34,8 +34,8 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     public static final String ACTION_CAR_CONNECTION_CHANGED = "com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED";
 
     private static final int NOTIFICATION_ID_MEDIA_BROWSER = 1;
-    private static long lastEventEmitTime = 0;
-    private static final long EVENT_THROTTLE_MS = 5000;
+    private static final long EVENT_THROTTLE_MS = 5000; // Throttle events to max once per 5 seconds
+    private long lastEventEmitTime = 0;
 
     @Nullable
     @Override
@@ -95,6 +95,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
         }
         
         // Return headless task config with longer timeout for Android Auto scenarios
+        // Task name must match the headless task registration in React Native lifecycle
         return new HeadlessJsTaskConfig("MediaBrowserService", data, 120000, true);
     }
 
@@ -118,11 +119,13 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
         if (intent != null) {
             String action = intent.getAction();
             if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) ||
-                                  action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
-                                  action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
+                                action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
+                                action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
                 ReactContext existingContext = MediaItemsStore.getInstance().getReactApplicationContext();
+                boolean hasActiveReact = existingContext != null && existingContext.hasActiveReactInstance();
 
-                if (existingContext != null && existingContext.hasActiveReactInstance()) {
+                if (hasActiveReact) {
+                    // React is active - emit event directly for fast response
                     try {
                         long currentTime = System.currentTimeMillis();
                         long timeSinceLastEvent = currentTime - lastEventEmitTime;
@@ -136,18 +139,14 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                             }
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error emitting event", e);
+                        Log.e(TAG, "[onStartCommand] Error emitting event", e);
                     }
-
-                    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            stopSelf();
-                        }
-                    }, 1000);
-                } else {
-                    super.onStartCommand(intent, flags, startId);
                 }
+                
+                // ALWAYS run headless task regardless of React state
+                // This ensures setupMediaBrowser() runs in ALL cases
+                super.onStartCommand(intent, flags, startId);
+                return START_STICKY;
             }
         }
         

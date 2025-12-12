@@ -18,6 +18,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.Service;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import androidx.core.app.NotificationCompat;
@@ -67,15 +68,15 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     mSession.setCallback(new MediaSessionCompat.Callback() {
         @Override
         public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
-            Log.d(TAG, "MediaBrowserService received onPlayFromMediaId: " + mediaId);
-            
             // Try to delegate to RNJWMediaSessionHelper if available
             boolean delegated = delegateToRNJWMediaSessionHelper("onPlayFromMediaId", mediaId, extras);
             
             if (!delegated) {
                 // Fallback: handle directly in MediaBrowserService
-                Log.d(TAG, "RNJWMediaSessionHelper not available, handling directly");
-                sendMediaItemToReactNative(mediaId);
+                
+                // This ensures ACTION_MEDIA_ITEM_SELECTED is sent to headless service,
+                // which triggers setupMediaBrowser() to register the openPlayer callback
+                sendMediaItemToJS(mediaId);
                 
                 // Try to delegate to JWPlayerNativePlaybackHandler for actual playback
                 try {
@@ -126,8 +127,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                         java.lang.reflect.Method handleMethod = handlerClass.getMethod("handleHeadlessMediaSelection", 
                             String.class, String.class, String.class, String.class, java.util.Map.class);
                         handleMethod.invoke(handlerInstance, mediaId, title, subtitle, icon, extrasMap);
-                        
-                        Log.d(TAG, "MediaBrowserService fallback: Called JWPlayerNativePlaybackHandler for: " + title);
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "Could not call JWPlayerNativePlaybackHandler fallback: " + e.getMessage());
@@ -137,19 +136,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         @Override
         public void onPlay() {
-            Log.d(TAG, "MediaBrowserService received onPlay");
             delegateToRNJWMediaSessionHelper("onPlay", null, null);
         }
         
         @Override
         public void onPause() {
-            Log.d(TAG, "MediaBrowserService received onPause");
             delegateToRNJWMediaSessionHelper("onPause", null, null);
         }
         
         @Override
         public void onStop() {
-            Log.d(TAG, "MediaBrowserService received onStop");
             boolean delegated = delegateToRNJWMediaSessionHelper("onStop", null, null);
             
             // If delegation failed, handle stop directly
@@ -163,7 +159,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                     if (handlerInstance != null) {
                         java.lang.reflect.Method stopMethod = handlerClass.getMethod("stopAndCleanup");
                         stopMethod.invoke(handlerInstance);
-                        Log.d(TAG, "Stopped background player via onStop");
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "Could not stop background player via onStop: " + e.getMessage());
@@ -189,19 +184,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         @Override
         public void onSkipToNext() {
-            Log.d(TAG, "MediaBrowserService received onSkipToNext");
             delegateToRNJWMediaSessionHelper("onSkipToNext", null, null);
         }
         
         @Override
         public void onSkipToPrevious() {
-            Log.d(TAG, "MediaBrowserService received onSkipToPrevious");
             delegateToRNJWMediaSessionHelper("onSkipToPrevious", null, null);
         }
         
         @Override
         public void onSeekTo(long pos) {
-            Log.d(TAG, "MediaBrowserService received onSeekTo: " + pos);
             delegateToRNJWMediaSessionHelper("onSeekTo", String.valueOf(pos), null);
         }
     });
@@ -284,14 +276,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 java.lang.reflect.Method createReactContextMethod = reactInstanceManager.getClass().getMethod("createReactContextInBackground");
                 createReactContextMethod.invoke(reactInstanceManager);
               }
-            } else {
-              Log.w(TAG, "[MediaBrowserService.onCreate] ReactInstanceManager was null");
             }
-          } else {
-            Log.w(TAG, "[MediaBrowserService.onCreate] ReactNativeHost was null");
           }
         } catch (Exception e) {
-          Log.e(TAG, "[MediaBrowserService.onCreate] Failed to initialize React Native headlessly", e);
+          Log.e(TAG, "Failed to initialize React Native headlessly", e);
         }
       }
     } catch (Exception e) {
@@ -359,7 +347,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   public static void updateSeekPosition(String mediaId, long positionMs) {
-    if (mediaId == null) { return; }
+    if (mediaId == null) {
+      return; 
+    }
 
     try {
       // Obtain a ReactContext the same way your service already does for other events.
@@ -391,17 +381,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
             intent.putExtra("mediaId", mediaId); 
             intent.putExtra("position", positionSec);
             ctx.startService(intent); 
-          } else { 
-            Log.d("MediaBrowserService", "reportSeekFromNative: no Context to start headless service"); 
-          } 
+          }
         } catch (Throwable t) { 
-          Log.w("MediaBrowserService", "reportSeekFromNative: failed to start headless service for seek", t); 
+          Log.w(TAG, "Failed to start headless service for seek", t); 
         }
-      } else {
-        Log.d("MediaBrowserService", "reportSeekFromNative: ReactContext not available");
       }
     } catch (Throwable t) {
-      Log.w("MediaBrowserService", "reportSeekFromNative failed", t);
+      Log.w(TAG, "Report Seek From Native failed", t);
     }
   }
 
@@ -473,7 +459,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 }
 
                 if (mediaItems.isEmpty() && !hasContext) {
-                    Log.w(TAG, "[MediaBrowserService.pollForData] No data after " + elapsed + "ms - launching app as fallback");
                     try {
                         Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
                         if (launchIntent != null) {
@@ -558,7 +543,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       
       if (mediaItem != null && reactContext != null) {
         WritableMap mediaItemMap = Arguments.createMap();
-        mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
+        String mediaIdStr = mediaItem.getDescription().getMediaId();
+        mediaItemMap.putString("id", mediaIdStr);
 
         CharSequence title = mediaItem.getDescription().getTitle();
         if (title != null) {
@@ -598,8 +584,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         // Send to React Native
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
-          
-        Log.d(TAG, "Static method: Sent onMediaItemSelected to React Native for: " + mediaId);
       }
     } catch (Exception e) {
       Log.e(TAG, "Error in static sendMediaItemToReactNative", e);
@@ -612,7 +596,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     
     if (mediaItem != null) {
       WritableMap mediaItemMap = Arguments.createMap();
-      mediaItemMap.putString("id", mediaItem.getDescription().getMediaId());
+      String mediaIdStr = mediaItem.getDescription().getMediaId();
+      mediaItemMap.putString("id", mediaIdStr);
 
       CharSequence title = mediaItem.getDescription().getTitle();
       if (title != null) {
@@ -801,12 +786,11 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                      PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
                      PlaybackStateCompat.ACTION_SEEK_TO)
           .build());
-          
+
         // Show media notification
-        showMediaNotification(title != null ? title.toString() : "Playing", 
-                            subtitle != null ? subtitle.toString() : "");
-          
-        Log.d(TAG, "Updated MediaSession metadata and state for: " + title);
+        String titleStr = title != null ? title.toString() : "Playing";
+        String subtitleStr = subtitle != null ? subtitle.toString() : "";
+        showMediaNotification(titleStr, subtitleStr);
         
       } catch (Exception e) {
         Log.e(TAG, "Error updating MediaSession for playback", e);
@@ -867,8 +851,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private PendingIntent createMediaActionIntent(String action) {
     Intent intent = new Intent(this, MediaBrowserService.class);
     intent.setAction("media_action_" + action);
-    return PendingIntent.getService(this, action.hashCode(), intent, 
+    PendingIntent pendingIntent = PendingIntent.getService(this, action.hashCode(), intent, 
       PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    return pendingIntent;
   }
   
   @Override
@@ -886,7 +871,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
       } else if ("media_action_dismiss".equals(action)) {
         // Notification was dismissed - stop playback and cleanup
-        Log.d(TAG, "Notification dismissed - stopping playback and cleanup");
         
         // Stop playback via MediaSession
         if (mSession != null && mSession.getController() != null) {
@@ -902,7 +886,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           if (handlerInstance != null) {
             java.lang.reflect.Method stopMethod = handlerClass.getMethod("stopAndCleanup");
             stopMethod.invoke(handlerInstance);
-            Log.d(TAG, "Stopped background player due to notification dismissal");
           }
         } catch (Exception e) {
           Log.w(TAG, "Could not stop background player: " + e.getMessage());
