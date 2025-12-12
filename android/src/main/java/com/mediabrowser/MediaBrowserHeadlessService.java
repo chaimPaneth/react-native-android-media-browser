@@ -146,7 +146,6 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                 // ALWAYS run headless task regardless of React state
                 // This ensures setupMediaBrowser() runs in ALL cases
                 super.onStartCommand(intent, flags, startId);
-                return START_STICKY;
             }
         }
         
