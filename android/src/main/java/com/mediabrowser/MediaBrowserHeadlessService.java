@@ -25,6 +25,8 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import androidx.core.app.NotificationCompat;
+import android.os.Handler;
+import android.os.Looper;
 
 public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
@@ -36,6 +38,14 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     private static final int NOTIFICATION_ID_MEDIA_BROWSER = 1;
     private static final long EVENT_THROTTLE_MS = 5000; // Throttle events to max once per 5 seconds
     private long lastEventEmitTime = 0;
+
+    // Safety: ensure we don't keep a foreground service around longer than needed
+    private static final long FOREGROUND_GRACE_MS = 20000; // 20s is enough to spin up headless JS
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    @Nullable private Runnable stopRunnable;
+
+    // Track the most recent Service startId (NOT the headless taskId)
+    private volatile int lastStartId = 0;
 
     @Nullable
     @Override
@@ -102,7 +112,11 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     @Override
     public void onHeadlessJsTaskFinish(int taskId) {
         super.onHeadlessJsTaskFinish(taskId);
-        stopSelf(taskId);
+
+        // taskId here is HeadlessJS task id, NOT Android Service startId.
+        // Calling stopSelf(taskId) is incorrect and can leave the service running.
+        cancelAutoStop();
+        stopForegroundAndSelf();
     }
 
     @Nullable
@@ -113,14 +127,18 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        createNotificationChannel();
-        startForeground(NOTIFICATION_ID_MEDIA_BROWSER, createNotification());
+        lastStartId = startId;
 
         if (intent != null) {
             String action = intent.getAction();
             if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) ||
                                 action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
                                 action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
+
+                // Foreground mode is only needed while we spin up headless JS.
+                createNotificationChannel();
+                startForeground(NOTIFICATION_ID_MEDIA_BROWSER, createNotification());
+                scheduleAutoStop();
                 ReactContext existingContext = MediaItemsStore.getInstance().getReactApplicationContext();
                 boolean hasActiveReact = existingContext != null && existingContext.hasActiveReactInstance();
 
@@ -174,13 +192,37 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
             .setContentText("Initializing...")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(false)
+            .setOngoing(true)
             .build();
     }
 
     @Override
     public void onDestroy() {
-        stopForeground(true);
+        stopForegroundAndSelf();
         super.onDestroy();
+    }
+
+    private void scheduleAutoStop() {
+        cancelAutoStop();
+        stopRunnable = () -> {
+            try {
+                stopForegroundAndSelf();
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to auto-stop foreground service", t);
+            }
+        };
+        mainHandler.postDelayed(stopRunnable, FOREGROUND_GRACE_MS);
+    }
+
+    private void cancelAutoStop() {
+        if (stopRunnable != null) {
+            mainHandler.removeCallbacks(stopRunnable);
+            stopRunnable = null;
+        }
+    }
+
+    private void stopForegroundAndSelf() {
+        stopForeground(true);
+        stopSelf();
     }
 }

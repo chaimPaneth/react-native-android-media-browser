@@ -177,8 +177,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                         .build());
                 }
                 
-                // Stop foreground service
-                stopForeground(true);
+                stopForegroundAndSelf();
             }
         }
         
@@ -402,7 +401,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     if (mSession != null) {
       mSession.setActive(false);
     }
-    stopForeground(true);
+    stopForegroundAndSelf();
   }
 
   //  private MediaSession getMediaSession() {
@@ -905,10 +904,15 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
         
         // Stop foreground service
-        stopForeground(true);
+        stopForegroundAndSelf();
       }
     }
     
     return super.onStartCommand(intent, flags, startId);
+  }
+
+  private void stopForegroundAndSelf() {
+    stopForeground(true);
+    stopSelf();
   }
 }
