@@ -340,7 +340,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
         
     } catch (Exception e) {
-        Log.w(TAG, "Could not delegate to RNJWMediaSessionHelper: " + e.getMessage());
+        Log.e(TAG, "🔧 [DELEGATE] Could not delegate to RNJWMediaSessionHelper for action=" + action + ": " + e.getMessage(), e);
         return false;
     }
   }
@@ -398,6 +398,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   @Override
   public void onDestroy() {
     super.onDestroy();
+    
     if (mSession != null) {
       mSession.setActive(false);
     }
@@ -527,6 +528,96 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     sendBrowsableItemToJS(parentMediaId);
     result.sendResult(mediaItems);
+  }
+
+  /**
+   * Public method to send skip to next event to React Native
+   * Called by RNJWMediaSessionHelper when Next button pressed in Android Auto
+   * @param mediaId The ID of the current media item
+   */
+  public static void sendSkipToNextEventToReactNative(String mediaId) {
+    try {
+      MediaItemsStore store = MediaItemsStore.getInstance();
+      ReactContext reactContext = store.getReactApplicationContext();
+      
+      if (reactContext != null) {
+        WritableMap event = Arguments.createMap();
+        event.putString("type", "skip-to-next");
+        event.putString("mediaId", mediaId);
+        event.putLong("timestamp", System.currentTimeMillis());
+        
+        try {
+          reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit("onSkipToNext", event);
+        } catch (Exception emitError) {
+          Log.e(TAG, "Error emitting skip-to-next event: " + emitError.getMessage(), emitError);
+        }
+      } else {
+        Log.w(TAG, "Cannot emit skip-to-next - no React context");
+      }
+    } catch (Exception e) {
+      Log.e(TAG, "Error in sendSkipToNextEventToReactNative", e);
+    }
+  }
+  
+  /**
+   * Public method to send skip to previous event to React Native
+   * Called by RNJWMediaSessionHelper when Previous button pressed in Android Auto
+   * @param mediaId The ID of the current media item
+   */
+  public static void sendSkipToPreviousEventToReactNative(String mediaId) {
+    try {
+      MediaItemsStore store = MediaItemsStore.getInstance();
+      ReactContext reactContext = store.getReactApplicationContext();
+      
+      if (reactContext != null) {
+        WritableMap event = Arguments.createMap();
+        event.putString("type", "skip-to-previous");
+        event.putString("mediaId", mediaId);
+        event.putLong("timestamp", System.currentTimeMillis());
+        
+        try {
+          reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit("onSkipToPrevious", event);
+        } catch (Exception emitError) {
+          Log.e(TAG, "Error emitting skip-to-previous event: " + emitError.getMessage(), emitError);
+        }
+      } else {
+        Log.w(TAG, "Cannot emit skip-to-previous - no React context");
+      }
+    } catch (Exception e) {
+      Log.e(TAG, "Error in sendSkipToPreviousEventToReactNative", e);
+    }
+  }
+  
+  /**
+   * Public method to send playlist complete event to React Native
+   * Called by RNJWMediaSessionHelper when onPlaylistComplete is triggered
+   * @param mediaId The ID of the media item that just completed
+   */
+  public static void sendPlaylistCompleteToReactNative(String mediaId) {
+    try {
+      MediaItemsStore store = MediaItemsStore.getInstance();
+      ReactContext reactContext = store.getReactApplicationContext();
+      
+      if (reactContext != null) {
+        WritableMap event = Arguments.createMap();
+        event.putString("type", "playlist-complete");
+        event.putString("mediaId", mediaId);
+        event.putLong("timestamp", System.currentTimeMillis());
+        
+        try {
+          reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit("onPlaylistComplete", event);
+        } catch (Exception emitError) {
+          Log.e(TAG, "Error emitting playlist complete event: " + emitError.getMessage(), emitError);
+        }
+      } else {
+        Log.w(TAG, "Cannot emit playlist complete - no React context");
+      }
+    } catch (Exception e) {
+      Log.e(TAG, "Error in static sendPlaylistCompleteToReactNative", e);
+    }
   }
 
   /**

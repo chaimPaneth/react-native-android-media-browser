@@ -271,7 +271,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         promise.reject("ERR_REQUIRED_KEY_NOT_PROVIDED", "Required key id was not provided.");
       }
     } catch (Exception e) {
-      e.printStackTrace();
+      Log.e(TAG, "Error updating media item", e);
       promise.reject("ERR_UPDATE_MEDIA_ITEM", e.getMessage(), e);
     }
   }
@@ -304,7 +304,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       handleItemsArray(parentId, updatedItemsArray, replace);
       promise.resolve("Success");
     } catch (Exception e) {
-      e.printStackTrace();
+      Log.e(TAG, "Error updating media items", e);
       promise.reject("ERR_UPDATE_MEDIA_ITEMS", e.getMessage(), e);
     }
   }
@@ -660,5 +660,118 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     // This method is used to register the headless task event handler
     // The actual event handling is done in the HeadlessJsTaskService
     Log.d(TAG, "Event handler registered for MediaBrowser headless tasks");
+  }
+
+  @ReactMethod
+  public void playFromMediaId(String mediaId, ReadableMap postData, Promise promise) {
+    try {
+      Bundle extras = null;
+      
+      // First try to get extras from provided postData
+      if (postData != null) {
+        extras = new Bundle();
+        
+        // Check if postData has the standard MediaItem structure with nested extras.info
+        // or if it's the raw post object itself
+        ReadableMap postInfo = null;
+        
+        if (postData.hasKey("extras")) {
+          // Standard MediaItem structure: { id, title, extras: { info: {...} } }
+          ReadableMap itemExtras = postData.getMap("extras");
+          if (itemExtras != null && itemExtras.hasKey("info")) {
+            if (itemExtras.getType("info") == ReadableType.Map) {
+              postInfo = itemExtras.getMap("info");
+            } else if (itemExtras.getType("info") == ReadableType.String) {
+              // Already stringified, just use it
+              try {
+                String infoStr = itemExtras.getString("info");
+                extras.putString("info", infoStr);
+                extras.putString("infoJson", infoStr);
+              } catch (Exception e) {
+                Log.w(TAG, "playFromMediaId: Failed to parse info string: " + e.getMessage());
+              }
+            }
+          }
+        } else {
+          // Raw post object passed directly
+          postInfo = postData;
+        }
+        
+        // If we have a post object (either from extras.info or raw), convert it
+        if (postInfo != null) {
+          try {
+            String postJson = convertReadableMapToJson(postInfo).toString();
+            extras.putString("info", postJson);
+            extras.putString("infoJson", postJson);
+            
+            // Also extract key fields for MediaSession metadata
+            if (postInfo.hasKey("title")) {
+              extras.putString("title", postInfo.getString("title"));
+            }
+            
+            // Extract author/subtitle
+            if (postInfo.hasKey("authors") && postInfo.getType("authors") == ReadableType.Array) {
+              ReadableArray authors = postInfo.getArray("authors");
+              if (authors != null && authors.size() > 0 && authors.getType(0) == ReadableType.Map) {
+                ReadableMap firstAuthor = authors.getMap(0);
+                if (firstAuthor != null && firstAuthor.hasKey("name")) {
+                  extras.putString("subtitle", firstAuthor.getString("name"));
+                }
+              }
+            }
+            
+            // Extract image
+            if (postInfo.hasKey("image")) {
+              extras.putString("image", postInfo.getString("image"));
+            } else if (postInfo.hasKey("seriesImage")) {
+              extras.putString("image", postInfo.getString("seriesImage"));
+            }
+            
+          } catch (Exception e) {
+            Log.w(TAG, "playFromMediaId: Failed to create extras from postInfo: " + e.getMessage());
+            extras = null;
+          }
+        }
+      }
+      
+      // Fallback: try to get extras from MediaItemsStore if no postData provided
+      if (extras == null) {
+        MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+        if (mediaItem != null && mediaItem.getDescription().getExtras() != null) {
+          extras = mediaItem.getDescription().getExtras();
+        } else {
+          Log.w(TAG, "playFromMediaId: MediaItem not found in store for mediaId: " + mediaId);
+        }
+      }
+      
+      // CRITICAL: JWPlayer creates WebView which MUST be on UI thread
+      // Run on UI thread to avoid "Calling View methods on another thread" crash
+      final Bundle finalExtras = extras;
+      UiThreadUtil.runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+          try {
+            // Trigger the MediaBrowserService callback onPlayFromMediaId
+            // This will delegate to RNJWMediaSessionHelper.handlePlayFromMediaId with proper extras
+            Class<?> helperClass = Class.forName("com.jwplayer.rnjwplayer.session.RNJWMediaSessionHelper");
+            java.lang.reflect.Method playFromMediaIdMethod = helperClass.getMethod("handlePlayFromMediaId", String.class, Bundle.class);
+            Boolean result = (Boolean) playFromMediaIdMethod.invoke(null, mediaId, finalExtras);
+            
+            if (result != null && result) {
+              promise.resolve("Playback started for mediaId: " + mediaId);
+            } else {
+              Log.w(TAG, "playFromMediaId returned false for mediaId: " + mediaId);
+              promise.reject("ERR_PLAYBACK_FAILED", "Failed to start playback for mediaId: " + mediaId);
+            }
+          } catch (Exception e) {
+            Log.e(TAG, "Failed to call RNJWMediaSessionHelper.handlePlayFromMediaId: " + e.getMessage());
+            promise.reject("ERR_PLAYBACK_EXCEPTION", "Exception during playback: " + e.getMessage(), e);
+          }
+        }
+      });
+    } catch (Exception e) {
+      Log.e(TAG, "Error in playFromMediaId: " + e.getMessage());
+      promise.reject("ERR_PLAY_FROM_MEDIA_ID", e.getMessage(), e);
+    }
   }
 }
