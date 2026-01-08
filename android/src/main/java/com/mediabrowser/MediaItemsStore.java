@@ -29,6 +29,10 @@ public class MediaItemsStore extends NotificationListenerService {
   private Map<String, List<MediaBrowserCompat.MediaItem>> mediaItemsHierarchy;
 
   private String rootId;
+  
+  // Indicates whether JS has populated the browse hierarchy at least once.
+  // Used by the service to show an loading placeholder instead of Android Auto's "No items".
+  private volatile boolean isHierarchyReady = false;
 
   public void setReactApplicationContext(ReactApplicationContext reactContext) {
     this.reactContext = reactContext;
@@ -63,6 +67,7 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void setMediaItemsHierarchy(Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
     this.mediaItemsHierarchy = hierarchy;
+    this.isHierarchyReady = true;
     if (listener != null) {
       String rootId = getRootId();
       // If the root ID is null, try to get it from the first item in the hierarchy
@@ -198,6 +203,11 @@ public class MediaItemsStore extends NotificationListenerService {
   public void clearAllData() {
     mediaItemsHierarchy.clear();
     rootId = null;
+    isHierarchyReady = false;
     reactContext = null;
+  }
+
+  public boolean isHierarchyReady() {
+    return isHierarchyReady;
   }
 }

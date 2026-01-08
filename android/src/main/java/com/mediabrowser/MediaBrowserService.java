@@ -458,6 +458,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                     mediaItems = new ArrayList<>();
                 }
 
+                // If we still don't have items and JS hasn't populated the browse hierarchy at least once,
+                // show an loading placeholder instead of Android Auto's "No items".
+                if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady()) {
+                  result.detach();
+                  return;
+                }
+
                 if (mediaItems.isEmpty() && !hasContext) {
                     try {
                         Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
@@ -527,6 +534,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
 
     sendBrowsableItemToJS(parentMediaId);
+
+    // Best-practice AA UX: never return an empty list during initialization.
+    // If JS hasn't populated the browse hierarchy at least once, return a single placeholder item.
+    if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady()) {
+      result.detach();
+      return;
+    }
+
     result.sendResult(mediaItems);
   }
 
@@ -626,6 +641,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    */
   public static void sendMediaItemToReactNative(String mediaId) {
     try {
+      // Guard: don't delegate playback for placeholder loading items
+      if (mediaId != null && !MediaItemsStore.getInstance().isHierarchyReady()) {
+        return;
+      }
       // Get the MediaItemsStore instance
       MediaItemsStore store = MediaItemsStore.getInstance();
       MediaBrowserCompat.MediaItem mediaItem = store.getMediaItemById(mediaId);
@@ -681,6 +700,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void sendMediaItemToJS(String mediaId) {
+    // Guard: don't delegate playback for placeholder loading items
+    if (mediaId != null && !MediaItemsStore.getInstance().isHierarchyReady()) {
+      return;
+    }
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
     MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
     
