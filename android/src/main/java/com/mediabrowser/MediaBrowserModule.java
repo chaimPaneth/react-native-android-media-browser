@@ -133,10 +133,13 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void setMediaItems(ReadableMap itemsMap, Promise promise) {
     try {
       Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsMap);
-      MediaItemsStore.getInstance().setRootId(itemsMap.getString("id"));
+      String rootId = itemsMap.getString("id");
+      
+      MediaItemsStore.getInstance().setRootId(rootId);
       MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
       promise.resolve(null);
     } catch (Exception e) {
+      Log.e(TAG, "❌ setMediaItems FAILED", e);
       promise.reject("ERROR", e);
     }
   }

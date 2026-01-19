@@ -21,6 +21,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import androidx.core.app.NotificationCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
@@ -36,9 +38,11 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
@@ -47,6 +51,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private static final int NOTIFICATION_ID = 2005;
 
   MediaSessionCompat mSession;
+  private Set<String> browsedItems = new HashSet<>(); // Track items that have been browsed
 
   @Override
   public void onCreate() {
@@ -289,6 +294,121 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
   
   /**
+   * Poll until JS has populated the browse hierarchy, then send real children.
+   * This keeps Android Auto on the native loading spinner (via result.detach())
+   * and avoids returning empty lists that some head units cache.
+   *
+   * IMPORTANT: result must be detached before calling this.
+   */
+  @Override
+  public void onLoadChildren(@NonNull final String parentMediaId,
+                            @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
+    final MediaItemsStore store = MediaItemsStore.getInstance();
+
+    // Send browsable event only on FIRST browse (user navigation), not on subsequent queries.
+    // IMPORTANT: Do NOT skip ROOT. Android Auto typically browses ROOT first on cold start;
+    // skipping it prevents headless boot.
+    try {
+      boolean isFirstBrowse = !browsedItems.contains(parentMediaId);
+      // boolean isRoot = MEDIA_ROOT_ID.equals(parentMediaId);
+      boolean isPlaceholder = parentMediaId.endsWith("-loading") || parentMediaId.endsWith(" loading...") || parentMediaId.contains("-empty");
+
+      // if (!isRoot && isFirstBrowse && !isPlaceholder) {
+      if (isFirstBrowse && !isPlaceholder) {
+        browsedItems.add(parentMediaId);
+        sendBrowsableItemToJS(parentMediaId);
+      }
+    } catch (Throwable t) {
+      Log.w(TAG, "Failed to send browsable item to JS for " + parentMediaId, t);
+    }
+
+    // If React/JS hasn't populated the hierarchy at least once, keep AA on its native spinner.
+    boolean hierarchyReady = store.isHierarchyReady();
+
+    if (!hierarchyReady) {
+      result.detach();
+      pollForData(result, parentMediaId, 0, 15000, System.currentTimeMillis());
+      return;
+    }
+
+    // Hierarchy is ready: return children if present.
+    List<MediaBrowserCompat.MediaItem> mediaItems = store.getMediaItemsByParentId(parentMediaId);
+    if (mediaItems == null) {
+      mediaItems = new ArrayList<>();
+    }
+
+    // For lazy-loaded nodes, Android Auto can cache an empty response.
+    // If we have no children yet, detach and poll briefly so JS has time to update.
+    boolean isLazyNode = "Downloads".equals(parentMediaId) || parentMediaId.startsWith("series:") || parentMediaId.startsWith("authors:");
+    if (mediaItems.isEmpty() && isLazyNode) {
+      result.detach();
+      pollForData(result, parentMediaId, 0, 8000, System.currentTimeMillis());
+      return;
+    }
+
+    result.sendResult(mediaItems);
+  }
+
+  /**
+   * Poll until JS has populated the browse hierarchy, then send real children.
+   * This keeps Android Auto on the native loading spinner (via result.detach()).
+   * IMPORTANT: result must be detached before calling this.
+   */
+  private void pollForHierarchyReadyAndSend(
+    @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result,
+    @NonNull final String parentId,
+    final int attempt,
+    final int timeoutMs,
+    final long startTimeMs
+  ) {
+    try {
+      final long now = System.currentTimeMillis();
+      final long elapsed = now - startTimeMs;
+
+      if (MediaItemsStore.getInstance().isHierarchyReady()) {
+        List<MediaBrowserCompat.MediaItem> items =
+          MediaItemsStore.getInstance().getSafeMediaItemsByParentId(parentId);
+
+        if (items == null) items = new ArrayList<>();
+
+        result.sendResult(items);
+        return;
+      }
+
+      if (elapsed >= timeoutMs) {
+        // Give up: send an empty list (AA shows its own empty-state UI).
+        result.sendResult(new ArrayList<MediaBrowserCompat.MediaItem>());
+        return;
+      }
+
+      int delay;
+      if (attempt <= 0) delay = 120;
+      else if (attempt == 1) delay = 200;
+      else if (attempt == 2) delay = 350;
+      else if (attempt == 3) delay = 600;
+      else if (attempt == 4) delay = 1000;
+      else delay = 1500;
+
+      new Handler(Looper.getMainLooper()).postDelayed(
+        new Runnable() {
+          @Override
+          public void run() {
+            pollForHierarchyReadyAndSend(result, parentId, attempt + 1, timeoutMs, startTimeMs);
+          }
+        },
+        delay
+      );
+
+    } catch (Throwable t) {
+      try {
+        result.sendResult(new ArrayList<MediaBrowserCompat.MediaItem>());
+      } catch (Throwable ignored) {
+        Log.e(TAG, "Failed to recover from pollForHierarchyReadyAndSend error for parentId=" + parentId, t);
+      }
+    }
+  }
+
+  /**
    * Try to delegate callback to RNJWMediaSessionHelper if it's available
    * @param action The action to delegate
    * @param param1 First parameter (mediaId for onPlayFromMediaId, position for onSeekTo)
@@ -298,7 +418,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private boolean delegateToRNJWMediaSessionHelper(String action, String param1, android.os.Bundle extras) {
     try {
         Class<?> helperClass = Class.forName("com.jwplayer.rnjwplayer.session.RNJWMediaSessionHelper");
-        
         switch (action) {
             case "onPlayFromMediaId":
                 java.lang.reflect.Method playFromMediaIdMethod = helperClass.getMethod("handlePlayFromMediaId", String.class, android.os.Bundle.class);
@@ -426,9 +545,36 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 //  }
 
   @Override
-  public void onMediaItemsUpdated(String parentId) {
-    if (parentId != null) {
-      notifyChildrenChanged(parentId);
+  public void onMediaItemsUpdated(String parentId) {   
+    // Normalize parentId
+    if (parentId == null || parentId.trim().isEmpty()) {
+      parentId = MEDIA_ROOT_ID;
+    }
+
+    // If root changed, allow re-sending browse events for deep nodes
+    java.util.Set<String> browsedSnapshot = null;
+    if (MEDIA_ROOT_ID.equals(parentId)) {
+      browsedSnapshot = new java.util.HashSet<>(browsedItems);
+      browsedItems.clear();
+    }
+
+    // Always notify the specific parent
+    notifyChildrenChanged(parentId);
+
+    // When ROOT changes, also refresh nodes AA may already be inside.
+    // This is a safe way to recover from previously empty/placeholder children.
+    // if (MEDIA_ROOT_ID.equals(parentId)) {
+    if (browsedSnapshot != null) {
+      try {
+        // for (String browsed : new java.util.HashSet<>(browsedItems)) {
+        for (String browsed : browsedSnapshot) {
+          if (browsed != null && !MEDIA_ROOT_ID.equals(browsed)) {
+            notifyChildrenChanged(browsed);
+          }
+        }
+      } catch (Throwable t) {
+        Log.w(TAG, "Failed to notify browsed nodes", t);
+      }
     }
   }
 
@@ -457,11 +603,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 if (mediaItems == null) {
                     mediaItems = new ArrayList<>();
                 }
-
-                // If we still don't have items and JS hasn't populated the browse hierarchy at least once,
-                // show an loading placeholder instead of Android Auto's "No items".
-                if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady()) {
-                  result.detach();
+                
+                // If hierarchy is still not ready, keep AA on its spinner by continuing polling until timeout.
+                if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady() && elapsed < maxWaitMs) {
+                  pollForData(result, parentMediaId, attempt + 1, maxWaitMs, startTime);
                   return;
                 }
 
@@ -487,7 +632,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
                 result.sendResult(mediaItems);
             } else {
-                // Keep polling
+                // No data yet - continue polling
                 pollForData(result, parentMediaId, attempt + 1, maxWaitMs, startTime);
             }
         } catch (Exception e) {
@@ -506,43 +651,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // This prevents Android Auto from showing "doesn't seem to be working" error
     String finalRootId = rootId != null ? rootId : MEDIA_ROOT_ID;
     return new BrowserRoot(finalRootId, null);
-  }
-
-  @Override
-  public void onLoadChildren(@NonNull final String parentMediaId,
-                             @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
-    // Check if React context is available
-    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
-    // IMPORTANT: Only check if context exists, not if JS bundle is loaded
-    // After force-stop, React initializes headlessly and JS bundle loads async
-    // Checking hasActiveCatalystInstance() is too strict - context exists but JS still loading
-    if (reactContext == null) {
-        // Detach result to allow async processing
-        result.detach();
-
-        // Poll for data with progressive backoff
-        long startTime = System.currentTimeMillis();
-        pollForData(result, parentMediaId, 0, 15000, startTime); // Poll for up to 15 seconds
-
-        return;
-    }
-
-    List<MediaBrowserCompat.MediaItem> mediaItems = MediaItemsStore.getInstance().getMediaItemsByParentId(parentMediaId);
-
-    if (mediaItems == null) {
-      mediaItems = new ArrayList<>();
-    }
-
-    sendBrowsableItemToJS(parentMediaId);
-
-    // Best-practice AA UX: never return an empty list during initialization.
-    // If JS hasn't populated the browse hierarchy at least once, return a single placeholder item.
-    if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady()) {
-      result.detach();
-      return;
-    }
-
-    result.sendResult(mediaItems);
   }
 
   /**
@@ -756,6 +864,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       if (reactContext != null) {
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
+      } else {
+        Log.w(TAG, "  ⚠️ React context is NULL, cannot emit event");
       }
       
       // Send to JWPlayer for headless mode handling
@@ -777,7 +887,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           extrasJavaMap
         );
       } catch (Exception e) {
-        Log.e(TAG, "Error sending to JWPlayer bridge", e);
+        Log.e(TAG, "  ❌ Error sending to JWPlayer bridge: " + e.getMessage(), e);
       }
       
       // Trigger headless service for background/killed app scenario
@@ -802,7 +912,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       try {
         startService(intent);
       } catch (Exception e) {
-        Log.e(TAG, "Failed to start headless service", e);
+        Log.e(TAG, "  ❌ Failed to start headless service: " + e.getMessage(), e);
       }
     }
   }
@@ -817,6 +927,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     if (reactContext != null) {
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit("onBrowsableItemSelected", event);
+    } else {
+        Log.w(TAG, "  ⚠️ React context is NULL, cannot emit onBrowsableItemSelected");
     }
     
     // Send to JWPlayer for headless mode handling
@@ -835,7 +947,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     try {
       startService(intent);
     } catch (Exception e) {
-      Log.e(TAG, "Failed to start headless service for browsable item", e);
+      Log.e(TAG, "  ❌ Failed to start headless service: " + e.getMessage());
     }
   }
   

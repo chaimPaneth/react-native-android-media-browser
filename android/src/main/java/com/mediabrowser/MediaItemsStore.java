@@ -5,11 +5,14 @@ import android.content.Context;
 import android.media.session.MediaController;
 import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.session.MediaControllerCompat;
 import android.support.v4.media.session.MediaSessionCompat;
+import android.support.v4.media.MediaDescriptionCompat;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 
@@ -33,6 +36,24 @@ public class MediaItemsStore extends NotificationListenerService {
   // Indicates whether JS has populated the browse hierarchy at least once.
   // Used by the service to show an loading placeholder instead of Android Auto's "No items".
   private volatile boolean isHierarchyReady = false;
+
+  /**
+   * Last-resort fallback used by MediaBrowserService ONLY after a timeout.
+   * Keep it deterministic and small, but do not use it for normal browsing.
+   */
+  public List<MediaBrowserCompat.MediaItem> getBootstrapChildren(String parentId) {
+    return new ArrayList<>();
+  }
+
+  /**
+   * Safe getter used by MediaBrowserService.
+   * When hierarchy isn't ready, the Service should keep AA on the native spinner via result.detach().
+   * When ready, return the real children (may be empty).
+   */
+  public List<MediaBrowserCompat.MediaItem> getSafeMediaItemsByParentId(String parentId) {
+    List<MediaBrowserCompat.MediaItem> items = mediaItemsHierarchy.get(parentId);
+    return items != null ? items : new ArrayList<>();
+  }
 
   public void setReactApplicationContext(ReactApplicationContext reactContext) {
     this.reactContext = reactContext;
@@ -80,7 +101,8 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public List<MediaBrowserCompat.MediaItem> getMediaItemsByParentId(String parentId) {
-    return mediaItemsHierarchy.get(parentId);
+    List<MediaBrowserCompat.MediaItem> items = mediaItemsHierarchy.get(parentId);
+    return items != null ? items : new ArrayList<>();
   }
 
   public MediaBrowserCompat.MediaItem getMediaItemById(String itemId) {
