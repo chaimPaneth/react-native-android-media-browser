@@ -662,7 +662,14 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public void registerEventHandler() {
     // This method is used to register the headless task event handler
     // The actual event handling is done in the HeadlessJsTaskService
-    Log.d(TAG, "Event handler registered for MediaBrowser headless tasks");
+    // Log.d(TAG, "Event handler registered for MediaBrowser headless tasks");
+    try {
+      Intent intent = new Intent(getReactApplicationContext(), MediaBrowserService.class);
+      intent.setAction(MediaBrowserService.ACTION_JS_READY);
+      getReactApplicationContext().startService(intent);
+    } catch (Throwable t) {
+      Log.w(TAG, "Failed to send ACTION_JS_READY to MediaBrowserService", t);
+    }
   }
 
   @ReactMethod

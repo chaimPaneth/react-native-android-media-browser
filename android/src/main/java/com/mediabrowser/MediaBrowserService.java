@@ -43,24 +43,36 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
   private static final int NOTIFICATION_ID = 2005;
+  public static final String ACTION_JS_READY = "com.mediabrowser.ACTION_JS_READY";
 
   MediaSessionCompat mSession;
   private Set<String> browsedItems = new HashSet<>(); // Track items that have been browsed
+  private static final long ROOT_KICK_INTERVAL_MS = 1000;
+  private long lastRootKickMs = 0;
+
+  // Pending async loads (event-driven). Avoid polling loops.
+  private final Map<String, Result<List<MediaBrowserCompat.MediaItem>>> pendingLoadResults = new HashMap<>();
+  private final Map<String, Runnable> pendingTimeouts = new HashMap<>();
 
   @Override
   public void onCreate() {
     super.onCreate();
+    // Log.d(TAG, "🚀 MediaBrowserService onCreate called");
 
     // Check if this is a fresh start after force-stop
     boolean isColdStart = MediaItemsStore.getInstance().getReactApplicationContext() == null;
+    // Log.d(TAG, "  " + (isColdStart ? "❄️ COLD START detected (no React context)" : "♻️ WARM START (React context exists)"));
 
     if (isColdStart) {
+        // Log.d(TAG, "  🧹 Clearing all data for cold start");
         MediaItemsStore.getInstance().clearAllData();
     }
 
@@ -73,8 +85,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     mSession.setCallback(new MediaSessionCompat.Callback() {
         @Override
         public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
+            // Log.d(TAG, "▶️ onPlayFromMediaId: mediaId=" + mediaId);
             // Try to delegate to RNJWMediaSessionHelper if available
             boolean delegated = delegateToRNJWMediaSessionHelper("onPlayFromMediaId", mediaId, extras);
+            // Log.d(TAG, "  " + (delegated ? "✅ Delegated to RNJWMediaSessionHelper" : "⚠️ Delegation failed, using fallback"));
             
             if (!delegated) {
                 // Fallback: handle directly in MediaBrowserService
@@ -141,16 +155,19 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         @Override
         public void onPlay() {
+            // Log.d(TAG, "▶️ onPlay called");
             delegateToRNJWMediaSessionHelper("onPlay", null, null);
         }
         
         @Override
         public void onPause() {
+            // Log.d(TAG, "⏸️ onPause called");
             delegateToRNJWMediaSessionHelper("onPause", null, null);
         }
         
         @Override
         public void onStop() {
+            // Log.d(TAG, "⏹️ onStop called");
             boolean delegated = delegateToRNJWMediaSessionHelper("onStop", null, null);
             
             // If delegation failed, handle stop directly
@@ -173,8 +190,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 if (mSession != null) {
                     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
                         .setState(PlaybackStateCompat.STATE_STOPPED, 0, 1.0f)
-                        .setActions(PlaybackStateCompat.ACTION_PLAY | 
-                                   PlaybackStateCompat.ACTION_PAUSE | 
+                        .setActions(PlaybackStateCompat.ACTION_PLAY |
+                                   PlaybackStateCompat.ACTION_PAUSE |
                                    PlaybackStateCompat.ACTION_STOP |
                                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
                                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
@@ -188,16 +205,19 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         @Override
         public void onSkipToNext() {
+            // Log.d(TAG, "⏭️ onSkipToNext called");
             delegateToRNJWMediaSessionHelper("onSkipToNext", null, null);
         }
         
         @Override
         public void onSkipToPrevious() {
+            // Log.d(TAG, "⏮️ onSkipToPrevious called");
             delegateToRNJWMediaSessionHelper("onSkipToPrevious", null, null);
         }
         
         @Override
         public void onSeekTo(long pos) {
+            // Log.d(TAG, "⏩ onSeekTo called: position=" + pos);
             delegateToRNJWMediaSessionHelper("onSeekTo", String.valueOf(pos), null);
         }
     });
@@ -205,7 +225,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // Set initial playback state
     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
       .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
-      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_STOP | 
+      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_STOP |
                  PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
       .build());
     
@@ -303,20 +323,43 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   @Override
   public void onLoadChildren(@NonNull final String parentMediaId,
                             @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
+    // Log.d(TAG, "📋 onLoadChildren called for parentId: " + parentMediaId);
+
     final MediaItemsStore store = MediaItemsStore.getInstance();
 
     // Send browsable event only on FIRST browse (user navigation), not on subsequent queries.
-    // IMPORTANT: Do NOT skip ROOT. Android Auto typically browses ROOT first on cold start;
-    // skipping it prevents headless boot.
+    // IMPORTANT: ROOT is a boot signal. On cold start (force-stop), AA usually browses ROOT first
+    // while React/JS is still loading. If we "consume" ROOT once and never retry, Android 12 can
+    // get stuck forever with an empty hierarchy.
     try {
-      boolean isFirstBrowse = !browsedItems.contains(parentMediaId);
-      // boolean isRoot = MEDIA_ROOT_ID.equals(parentMediaId);
-      boolean isPlaceholder = parentMediaId.endsWith("-loading") || parentMediaId.endsWith(" loading...") || parentMediaId.contains("-empty");
+      final boolean isRoot = MEDIA_ROOT_ID.equals(parentMediaId);
+      final boolean isPlaceholder = parentMediaId.endsWith("-loading")
+        || parentMediaId.endsWith(" loading...")
+        || parentMediaId.contains("-empty");
 
-      // if (!isRoot && isFirstBrowse && !isPlaceholder) {
-      if (isFirstBrowse && !isPlaceholder) {
-        browsedItems.add(parentMediaId);
-        sendBrowsableItemToJS(parentMediaId);
+      // Use the same store instance already created above
+      final boolean hierarchyReadyNow = store.isHierarchyReady();
+
+      if (!isPlaceholder) {
+        if (isRoot && !hierarchyReadyNow) {
+          // Cold-start retry: keep kicking ROOT (throttled) until JS populates the hierarchy.
+          final long now = System.currentTimeMillis();
+          if (now - lastRootKickMs >= ROOT_KICK_INTERVAL_MS) {
+            lastRootKickMs = now;
+            // Log.d(TAG, "  🔁 ROOT cold-start kick (hierarchy not ready) -> sending event to JS");
+            sendBrowsableItemToJS(parentMediaId);
+          } else {
+            // Log.d(TAG, "  ⏱️ ROOT kick throttled (hierarchy not ready)");
+          }
+          // IMPORTANT: do NOT add ROOT to browsedItems while hierarchy isn't ready.
+        } else {
+          final boolean isFirstBrowse = !browsedItems.contains(parentMediaId);
+          if (isFirstBrowse) {
+            // Log.d(TAG, "  🆕 First browse of: " + parentMediaId + " - sending event to JS");
+            browsedItems.add(parentMediaId);
+            sendBrowsableItemToJS(parentMediaId);
+          }
+        }
       }
     } catch (Throwable t) {
       Log.w(TAG, "Failed to send browsable item to JS for " + parentMediaId, t);
@@ -324,10 +367,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     // If React/JS hasn't populated the hierarchy at least once, keep AA on its native spinner.
     boolean hierarchyReady = store.isHierarchyReady();
+    // Log.d(TAG, "  🏗️ isHierarchyReady: " + hierarchyReady);
 
     if (!hierarchyReady) {
+      // Log.d(TAG, "  ⏳ hierarchy not ready -> detaching and waiting for store update (no polling)");
       result.detach();
-      pollForData(result, parentMediaId, 0, 15000, System.currentTimeMillis());
+      registerPendingLoad(parentMediaId, result, 15000);
       return;
     }
 
@@ -338,14 +383,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
 
     // For lazy-loaded nodes, Android Auto can cache an empty response.
-    // If we have no children yet, detach and poll briefly so JS has time to update.
+    // If we have no children yet, detach and wait for update (no polling).
     boolean isLazyNode = "Downloads".equals(parentMediaId) || parentMediaId.startsWith("series:") || parentMediaId.startsWith("authors:");
     if (mediaItems.isEmpty() && isLazyNode) {
+      // Log.d(TAG, "  ⏳ lazy node has 0 children -> detaching and waiting for children update (no polling)");
       result.detach();
-      pollForData(result, parentMediaId, 0, 8000, System.currentTimeMillis());
+      registerPendingLoad(parentMediaId, result, 8000);
       return;
     }
 
+    // Log.d(TAG, "  ✅ Sending " + mediaItems.size() + " items to Android Auto for parentId: " + parentMediaId);
     result.sendResult(mediaItems);
   }
 
@@ -371,12 +418,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
         if (items == null) items = new ArrayList<>();
 
+        // Log.d(TAG, "✅ pollForHierarchyReadyAndSend: hierarchyReady=true parentId=" + parentId + " items=" + items.size());
         result.sendResult(items);
         return;
       }
 
       if (elapsed >= timeoutMs) {
         // Give up: send an empty list (AA shows its own empty-state UI).
+        // Log.w(TAG, "⏱️ pollForHierarchyReadyAndSend: timeout parentId=" + parentId + " sending empty");
         result.sendResult(new ArrayList<MediaBrowserCompat.MediaItem>());
         return;
       }
@@ -388,6 +437,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       else if (attempt == 3) delay = 600;
       else if (attempt == 4) delay = 1000;
       else delay = 1500;
+
+      // Log.d(TAG, "⏳ pollForHierarchyReadyAndSend: waiting parentId=" + parentId + " attempt=" + attempt + " delayMs=" + delay);
 
       new Handler(Looper.getMainLooper()).postDelayed(
         new Runnable() {
@@ -401,6 +452,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     } catch (Throwable t) {
       try {
+        // Log.w(TAG, "Failed pollForHierarchyReadyAndSend, sending empty for parentId=" + parentId, t);
         result.sendResult(new ArrayList<MediaBrowserCompat.MediaItem>());
       } catch (Throwable ignored) {
         Log.e(TAG, "Failed to recover from pollForHierarchyReadyAndSend error for parentId=" + parentId, t);
@@ -416,8 +468,11 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * @return true if delegation was successful, false if RNJWMediaSessionHelper not available
    */
   private boolean delegateToRNJWMediaSessionHelper(String action, String param1, android.os.Bundle extras) {
+    // Log.d(TAG, "🔄 Attempting to delegate '" + action + "' to RNJWMediaSessionHelper" + (param1 != null ? " (param: " + param1 + ")" : ""));
     try {
         Class<?> helperClass = Class.forName("com.jwplayer.rnjwplayer.session.RNJWMediaSessionHelper");
+        // Log.d(TAG, "  ✅ Found RNJWMediaSessionHelper class");
+        
         switch (action) {
             case "onPlayFromMediaId":
                 java.lang.reflect.Method playFromMediaIdMethod = helperClass.getMethod("handlePlayFromMediaId", String.class, android.os.Bundle.class);
@@ -459,14 +514,15 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
         
     } catch (Exception e) {
-        Log.e(TAG, "🔧 [DELEGATE] Could not delegate to RNJWMediaSessionHelper for action=" + action + ": " + e.getMessage(), e);
+        Log.w(TAG, "  ⚠️ Delegation failed for '" + action + "': " + e.getMessage());
+        // Log.e(TAG, "🔧 [DELEGATE] Could not delegate to RNJWMediaSessionHelper for action=" + action + ": " + e.getMessage(), e);
         return false;
     }
   }
 
   public static void updateSeekPosition(String mediaId, long positionMs) {
     if (mediaId == null) {
-      return; 
+      return;
     }
 
     try {
@@ -488,20 +544,20 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("MediaBrowserEvent", event);
 
-        try { 
-          android.content.Context ctx = (reactContext != null) ? reactContext.getApplicationContext() : null; 
-          if (ctx != null) { 
-            android.content.Intent intent = new android.content.Intent(ctx, MediaBrowserHeadlessService.class); 
+        try {
+          android.content.Context ctx = (reactContext != null) ? reactContext.getApplicationContext() : null;
+          if (ctx != null) {
+            android.content.Intent intent = new android.content.Intent(ctx, MediaBrowserHeadlessService.class);
             
-            // Reuse existing action to ensure service starts 
-            intent.setAction(MediaBrowserHeadlessService.ACTION_MEDIA_ITEM_SELECTED); 
-            intent.putExtra("type", "media-seek"); 
-            intent.putExtra("mediaId", mediaId); 
+            // Reuse existing action to ensure service starts
+            intent.setAction(MediaBrowserHeadlessService.ACTION_MEDIA_ITEM_SELECTED);
+            intent.putExtra("type", "media-seek");
+            intent.putExtra("mediaId", mediaId);
             intent.putExtra("position", positionSec);
-            ctx.startService(intent); 
+            ctx.startService(intent);
           }
-        } catch (Throwable t) { 
-          Log.w(TAG, "Failed to start headless service for seek", t); 
+        } catch (Throwable t) {
+          Log.w(TAG, "Failed to start headless service for seek", t);
         }
       }
     } catch (Throwable t) {
@@ -545,7 +601,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 //  }
 
   @Override
-  public void onMediaItemsUpdated(String parentId) {   
+  public void onMediaItemsUpdated(String parentId) {
     // Normalize parentId
     if (parentId == null || parentId.trim().isEmpty()) {
       parentId = MEDIA_ROOT_ID;
@@ -554,6 +610,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // If root changed, allow re-sending browse events for deep nodes
     java.util.Set<String> browsedSnapshot = null;
     if (MEDIA_ROOT_ID.equals(parentId)) {
+      Log.d(TAG, "  🧹 ROOT updated: refreshing browsed nodes and clearing cache");
       browsedSnapshot = new java.util.HashSet<>(browsedItems);
       browsedItems.clear();
     }
@@ -561,12 +618,24 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // Always notify the specific parent
     notifyChildrenChanged(parentId);
 
+    // If AA is waiting on a detached Result for this parent, flush it now.
+    flushPendingIfReady(parentId);
+
+    // If ROOT became ready, also flush ROOT waiters and any other pending nodes.
+    if (MEDIA_ROOT_ID.equals(parentId) && MediaItemsStore.getInstance().isHierarchyReady()) {
+      flushPendingIfReady(MEDIA_ROOT_ID);
+      try {
+        // Flush all pending nodes opportunistically
+        for (String key : new java.util.HashSet<>(pendingLoadResults.keySet())) {
+          flushPendingIfReady(key);
+        }
+      } catch (Throwable ignored) {}
+    }
+
     // When ROOT changes, also refresh nodes AA may already be inside.
     // This is a safe way to recover from previously empty/placeholder children.
-    // if (MEDIA_ROOT_ID.equals(parentId)) {
     if (browsedSnapshot != null) {
       try {
-        // for (String browsed : new java.util.HashSet<>(browsedItems)) {
         for (String browsed : browsedSnapshot) {
           if (browsed != null && !MEDIA_ROOT_ID.equals(browsed)) {
             notifyChildrenChanged(browsed);
@@ -578,78 +647,66 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
   }
 
-  /**
-   * Poll for data with exponential backoff
-   */
-  private void pollForData(@NonNull final Result<List<MediaBrowserCompat.MediaItem>> result,
-                          String parentMediaId, int attempt, long maxWaitMs, long startTime) {
-    // Calculate delay: 500ms, 1s, 2s, 3s, 4s...
-    long delay = attempt == 0 ? 500 : Math.min(attempt * 1000L, 4000);
+  private void registerPendingLoad(@NonNull final String parentId,
+                                   @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result,
+                                   final int timeoutMs) {
+    // Replace any previous pending result for this parentId (AA may re-request quickly)
+    pendingLoadResults.put(parentId, result);
 
-    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+    // Clear any existing timeout runnable
+    Runnable oldTimeout = pendingTimeouts.remove(parentId);
+    if (oldTimeout != null) {
+      try { new Handler(Looper.getMainLooper()).removeCallbacks(oldTimeout); } catch (Throwable ignored) {}
+    }
+
+    Runnable timeoutRunnable = new Runnable() {
+      @Override
+      public void run() {
         try {
-            ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
-            List<MediaBrowserCompat.MediaItem> mediaItems = MediaItemsStore.getInstance()
-                .getMediaItemsByParentId(parentMediaId);
-
-            boolean hasData = mediaItems != null && !mediaItems.isEmpty();
-            // IMPORTANT: Match onLoadChildren logic - only check if context exists
-            // Don't check hasActiveCatalystInstance() - too strict during async JS bundle loading
-            boolean hasContext = reactContext != null;
-            long elapsed = System.currentTimeMillis() - startTime;
-
-            if (hasData || elapsed >= maxWaitMs) {
-                // Success or timeout - send whatever we have
-                if (mediaItems == null) {
-                    mediaItems = new ArrayList<>();
-                }
-                
-                // If hierarchy is still not ready, keep AA on its spinner by continuing polling until timeout.
-                if (mediaItems.isEmpty() && !MediaItemsStore.getInstance().isHierarchyReady() && elapsed < maxWaitMs) {
-                  pollForData(result, parentMediaId, attempt + 1, maxWaitMs, startTime);
-                  return;
-                }
-
-                if (mediaItems.isEmpty() && !hasContext) {
-                    try {
-                        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-                        if (launchIntent != null) {
-                            launchIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-
-                            // Use PendingIntent which is more reliable from a Service on Android 12+
-                            PendingIntent pendingIntent = PendingIntent.getActivity(
-                                this,
-                                0,
-                                launchIntent,
-                                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-                            );
-                            pendingIntent.send();
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "[MediaBrowserService.pollForData] Failed to launch Activity", e);
-                    }
-                }
-
-                result.sendResult(mediaItems);
-            } else {
-                // No data yet - continue polling
-                pollForData(result, parentMediaId, attempt + 1, maxWaitMs, startTime);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "[MediaBrowserService.pollForData] Error polling for data", e);
-            result.sendResult(new ArrayList<>());
+          Result<List<MediaBrowserCompat.MediaItem>> pending = pendingLoadResults.remove(parentId);
+          pendingTimeouts.remove(parentId);
+          if (pending != null) {
+            // Log.w(TAG, "⏱️ Pending load timeout: parentId=" + parentId + " -> sending empty");
+            pending.sendResult(new ArrayList<MediaBrowserCompat.MediaItem>());
+          }
+        } catch (Throwable t) {
+          Log.w(TAG, "Failed sending timeout empty result for parentId=" + parentId, t);
         }
-    }, delay);
+      }
+    };
+
+    pendingTimeouts.put(parentId, timeoutRunnable);
+    new Handler(Looper.getMainLooper()).postDelayed(timeoutRunnable, timeoutMs);
+  }
+
+  private void flushPendingIfReady(@NonNull final String parentId) {
+    try {
+      Result<List<MediaBrowserCompat.MediaItem>> pending = pendingLoadResults.remove(parentId);
+      Runnable timeout = pendingTimeouts.remove(parentId);
+      if (timeout != null) {
+        try { new Handler(Looper.getMainLooper()).removeCallbacks(timeout); } catch (Throwable ignored) {}
+      }
+      if (pending != null) {
+        List<MediaBrowserCompat.MediaItem> items = MediaItemsStore.getInstance().getSafeMediaItemsByParentId(parentId);
+        if (items == null) items = new ArrayList<>();
+        // Log.d(TAG, "✅ Flushing pending load: parentId=" + parentId + " items=" + items.size());
+        pending.sendResult(items);
+      }
+    } catch (Throwable t) {
+      Log.w(TAG, "Failed flushing pending result for parentId=" + parentId, t);
+    }
   }
 
   @Override
   public BrowserRoot onGetRoot(@NonNull String clientPackageName,
                                int clientUid,
                                @Nullable Bundle rootHints) {
+    // Log.d(TAG, "🔌 onGetRoot called - clientPackage: " + clientPackageName + ", uid: " + clientUid);
     String rootId = MediaItemsStore.getInstance().getRootId();
     // Always return a root, even if empty - use default ROOT if rootId is null
     // This prevents Android Auto from showing "doesn't seem to be working" error
     String finalRootId = rootId != null ? rootId : MEDIA_ROOT_ID;
+    // Log.d(TAG, "  ✅ Returning rootId: " + finalRootId);
     return new BrowserRoot(finalRootId, null);
   }
 
@@ -808,8 +865,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void sendMediaItemToJS(String mediaId) {
+    // Log.d(TAG, "📤 sendMediaItemToJS called for mediaId: " + mediaId);
     // Guard: don't delegate playback for placeholder loading items
     if (mediaId != null && !MediaItemsStore.getInstance().isHierarchyReady()) {
+      // Log.w(TAG, "  ⚠️ Hierarchy not ready, skipping media item emission");
       return;
     }
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
@@ -862,6 +921,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
       // Send to JS if React context is available
       if (reactContext != null) {
+        // Log.d(TAG, "  ✅ Emitting onMediaItemSelected event to JS");
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
       } else {
@@ -870,6 +930,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       
       // Send to JWPlayer for headless mode handling
       try {
+        // Log.d(TAG, "  📺 Calling JWPlayerBridge.handleMediaItemSelected");
         java.util.Map<String, Object> extrasJavaMap = new java.util.HashMap<>();
         if (extras != null) {
           for (String key : extras.keySet()) {
@@ -879,13 +940,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
         
         JWPlayerBridge.getInstance().handleMediaItemSelected(
-          this, 
+          this,
           mediaItem.getDescription().getMediaId(),
           title != null ? title.toString() : null,
           subtitle != null ? subtitle.toString() : null,
           iconUri != null ? iconUri.toString() : null,
           extrasJavaMap
         );
+        // Log.d(TAG, "  ✅ JWPlayerBridge call completed");
       } catch (Exception e) {
         Log.e(TAG, "  ❌ Error sending to JWPlayer bridge: " + e.getMessage(), e);
       }
@@ -910,7 +972,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       }
       
       try {
+        // Log.d(TAG, "  📨 Starting headless service for media item");
         startService(intent);
+        // Log.d(TAG, "  ✅ Headless service started successfully");
       } catch (Exception e) {
         Log.e(TAG, "  ❌ Failed to start headless service: " + e.getMessage(), e);
       }
@@ -918,6 +982,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void sendBrowsableItemToJS(String parentMediaId) {
+    // Log.d(TAG, "🔔 sendBrowsableItemToJS called for: " + parentMediaId);
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
     WritableMap event = Arguments.createMap();
     event.putString("id", parentMediaId);
@@ -925,6 +990,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     // Send to JS if React context is available
     if (reactContext != null) {
+        // Log.d(TAG, "  ✅ React context available, emitting onBrowsableItemSelected");
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit("onBrowsableItemSelected", event);
     } else {
@@ -945,6 +1011,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     intent.putExtra("playableOrBrowsable", "BROWSABLE");
     
     try {
+      // Log.d(TAG, "  📨 Starting headless service for browsable item");
       startService(intent);
     } catch (Exception e) {
       Log.e(TAG, "  ❌ Failed to start headless service: " + e.getMessage());
@@ -1004,8 +1071,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         // Update playback state to playing
         mSession.setPlaybackState(new PlaybackStateCompat.Builder()
           .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
-          .setActions(PlaybackStateCompat.ACTION_PLAY | 
-                     PlaybackStateCompat.ACTION_PAUSE | 
+          .setActions(PlaybackStateCompat.ACTION_PLAY |
+                     PlaybackStateCompat.ACTION_PAUSE |
                      PlaybackStateCompat.ACTION_STOP |
                      PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
                      PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
@@ -1026,8 +1093,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private void createNotificationChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       NotificationChannel channel = new NotificationChannel(
-        CHANNEL_ID, 
-        "Media Playback", 
+        CHANNEL_ID,
+        "Media Playback",
         NotificationManager.IMPORTANCE_LOW
       );
       channel.setDescription("Controls for media playback");
@@ -1046,7 +1113,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       // Create delete intent for when notification is dismissed
       Intent deleteIntent = new Intent(this, MediaBrowserService.class);
       deleteIntent.setAction("media_action_dismiss");
-      PendingIntent deletePendingIntent = PendingIntent.getService(this, "dismiss".hashCode(), deleteIntent, 
+      PendingIntent deletePendingIntent = PendingIntent.getService(this, "dismiss".hashCode(), deleteIntent,
         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
       
       // Create notification with media controls
@@ -1076,16 +1143,30 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private PendingIntent createMediaActionIntent(String action) {
     Intent intent = new Intent(this, MediaBrowserService.class);
     intent.setAction("media_action_" + action);
-    PendingIntent pendingIntent = PendingIntent.getService(this, action.hashCode(), intent, 
+    PendingIntent pendingIntent = PendingIntent.getService(this, action.hashCode(), intent,
       PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     return pendingIntent;
   }
-  
+
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
-    if (intent != null && intent.getAction() != null) {
-      String action = intent.getAction();
-      
+    try {
+      final String action = (intent != null) ? intent.getAction() : null;
+      if (action == null) {
+        return super.onStartCommand(intent, flags, startId);
+      }
+
+      // 1) JS ready signal (your new fix)
+      if (ACTION_JS_READY.equals(action)) {
+        final long now = System.currentTimeMillis();
+        if (now - lastRootKickMs >= ROOT_KICK_INTERVAL_MS) {
+          lastRootKickMs = now;
+          sendBrowsableItemToJS(MEDIA_ROOT_ID);
+        }
+        return super.onStartCommand(intent, flags, startId);
+      }
+
+      // 2) Legacy notification actions (your old behavior)
       if ("media_action_pause".equals(action)) {
         if (mSession != null && mSession.getController() != null) {
           mSession.getController().getTransportControls().pause();
@@ -1120,20 +1201,23 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         if (mSession != null) {
           mSession.setPlaybackState(new PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_STOPPED, 0, 1.0f)
-            .setActions(PlaybackStateCompat.ACTION_PLAY | 
-                       PlaybackStateCompat.ACTION_PAUSE | 
-                       PlaybackStateCompat.ACTION_STOP |
-                       PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                       PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                       PlaybackStateCompat.ACTION_SEEK_TO)
+            .setActions(PlaybackStateCompat.ACTION_PLAY |
+                        PlaybackStateCompat.ACTION_PAUSE |
+                        PlaybackStateCompat.ACTION_STOP |
+                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
+                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
+                        PlaybackStateCompat.ACTION_SEEK_TO)
             .build());
         }
         
         // Stop foreground service
         stopForegroundAndSelf();
       }
+
+    } catch (Throwable t) {
+      Log.w(TAG, "onStartCommand failed", t);
     }
-    
+
     return super.onStartCommand(intent, flags, startId);
   }
 
