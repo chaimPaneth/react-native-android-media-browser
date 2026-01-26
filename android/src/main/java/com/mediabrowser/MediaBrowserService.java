@@ -50,7 +50,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private static final String MEDIA_ROOT_ID = "ROOT";
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
-  private static final int NOTIFICATION_ID = 2005;
+  public static final int NOTIFICATION_ID = 2005;
   public static final String ACTION_JS_READY = "com.mediabrowser.ACTION_JS_READY";
 
   MediaSessionCompat mSession;
