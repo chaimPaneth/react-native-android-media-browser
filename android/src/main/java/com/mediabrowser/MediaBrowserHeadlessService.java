@@ -35,7 +35,11 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     public static final String ACTION_BROWSABLE_ITEM_SELECTED = "com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED";
     public static final String ACTION_CAR_CONNECTION_CHANGED = "com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED";
 
-    private static final int NOTIFICATION_ID_MEDIA_BROWSER = 1;
+    // Use the same notification ID as MediaBrowserService (2005) so that
+    // the media player notification will replace this initializing notification
+    // instead of showing two separate notifications
+    private static final int NOTIFICATION_ID_MEDIA_BROWSER = 2005;
+    private static final String CHANNEL_ID = "MediaPlayback";
     private static final long EVENT_THROTTLE_MS = 5000; // Throttle events to max once per 5 seconds
     private long lastEventEmitTime = 0;
 
@@ -172,12 +176,15 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Use the same channel as MediaBrowserService for consistency
             NotificationChannel channel = new NotificationChannel(
-                "MediaBrowserHeadless",
-                "Media Browser Background",
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID,
+                "Media Playback",
+                // Use IMPORTANCE_MIN to make notification as unobtrusive as possible
+                // while still satisfying Android's foreground service requirement
+                NotificationManager.IMPORTANCE_MIN
             );
-            channel.setDescription("Handles Android Auto connection in background");
+            channel.setDescription("Controls for media playback");
             channel.setShowBadge(false);
             NotificationManager notificationManager = getSystemService(NotificationManager.class);
             if (notificationManager != null) {
@@ -187,11 +194,17 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     }
 
     private Notification createNotification() {
-        return new NotificationCompat.Builder(this, "MediaBrowserHeadless")
+        // Get app icon for better branding
+        int appIcon = getResources().getIdentifier("ic_launcher", "mipmap", getPackageName());
+        if (appIcon == 0) {
+            appIcon = android.R.drawable.ic_media_play;
+        }
+        
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Android Auto")
-            .setContentText("Initializing...")
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentText("Connecting...")
+            .setSmallIcon(appIcon)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .build();
     }
