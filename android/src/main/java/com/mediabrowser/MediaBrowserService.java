@@ -1163,6 +1163,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           lastRootKickMs = now;
           sendBrowsableItemToJS(MEDIA_ROOT_ID);
         }
+
+        // ✅ Remove the useless bootstrap notification once JS is ready
+        try { stopForeground(true); } catch (Throwable ignored) {}
+
         return super.onStartCommand(intent, flags, startId);
       }
 

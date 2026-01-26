@@ -38,7 +38,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     // Use the same notification ID as MediaBrowserService (2005) so that
     // the media player notification will replace this initializing notification
     // instead of showing two separate notifications
-    private static final int NOTIFICATION_ID_MEDIA_BROWSER = 2005;
+    private static final int NOTIFICATION_ID_MEDIA_BROWSER = MediaBrowserService.NOTIFICATION_ID;
     private static final String CHANNEL_ID = "MediaPlayback";
     private static final long EVENT_THROTTLE_MS = 5000; // Throttle events to max once per 5 seconds
     private long lastEventEmitTime = 0;
@@ -117,8 +117,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     public void onHeadlessJsTaskFinish(int taskId) {
         super.onHeadlessJsTaskFinish(taskId);
 
-        // taskId here is HeadlessJS task id, NOT Android Service startId.
-        // Calling stopSelf(taskId) is incorrect and can leave the service running.
+        // Headless task finished: stop immediately and remove any pending auto-stop.
         cancelAutoStop();
         stopForegroundAndSelf();
     }
@@ -139,12 +138,16 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                                 action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
                                 action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
 
-                // Foreground mode is only needed while we spin up headless JS.
-                createNotificationChannel();
-                startForeground(NOTIFICATION_ID_MEDIA_BROWSER, createNotification());
-                scheduleAutoStop();
                 ReactContext existingContext = MediaItemsStore.getInstance().getReactApplicationContext();
                 boolean hasActiveReact = existingContext != null && existingContext.hasActiveReactInstance();
+                
+                // Foreground is only needed for cold start (killed app) while headless JS spins up.
+                // If React is already active, DO NOT show "Connecting..." because it can overwrite the real media notif (same ID).
+                if (!hasActiveReact) {
+                    createNotificationChannel();
+                    startForeground(NOTIFICATION_ID_MEDIA_BROWSER, createNotification());
+                    scheduleAutoStop();
+                }
 
                 if (hasActiveReact) {
                     // React is active - emit event directly for fast response
@@ -194,8 +197,8 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     }
 
     private Notification createNotification() {
-        // Get app icon for better branding
-        int appIcon = getResources().getIdentifier("ic_launcher", "mipmap", getPackageName());
+        // Get app notification icon for better branding
+        int appIcon = getResources().getIdentifier("ic_stat_notify", "drawable", getPackageName());
         if (appIcon == 0) {
             appIcon = android.R.drawable.ic_media_play;
         }
@@ -212,11 +215,17 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     @Override
     public void onDestroy() {
         stopForegroundAndSelf();
+        cancelAutoStop();
         super.onDestroy();
     }
 
     private void scheduleAutoStop() {
-        cancelAutoStop();
+        // Do NOT reset the timer on every event. Android Auto can dispatch frequent intents.
+        // If we keep re-scheduling, this notification may never disappear.
+        if (stopRunnable != null) {
+            return;
+        }
+
         stopRunnable = () -> {
             try {
                 stopForegroundAndSelf();
