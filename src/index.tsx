@@ -1,4 +1,5 @@
 import { NativeModules, DeviceEventEmitter, EmitterSubscription, AppRegistry } from 'react-native';
+import { warnIfMissingAndroidAutoNotificationIcon } from './androidAutoNotificationIcon';
 
 // Accessing the native MediaBrowser module
 const { MediaBrowser } = NativeModules;
@@ -122,7 +123,10 @@ const MediaBrowserWrapper = {
   // Method to register event handler for headless JS tasks
   registerEventHandler: (handler: (data: any) => void | Promise<void>) => {
     eventHandler = handler;
-    
+
+    // One-time dev warning so engineers remember to add the Android Auto notif icon in the parent app
+    void warnIfMissingAndroidAutoNotificationIcon();
+
     // Register the headless task
     const headlessTask = async (data: any) => {
       try {

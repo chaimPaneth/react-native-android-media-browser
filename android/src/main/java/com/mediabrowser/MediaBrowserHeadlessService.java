@@ -51,6 +51,8 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     // Track the most recent Service startId (NOT the headless taskId)
     private volatile int lastStartId = 0;
 
+    private static volatile boolean didWarnMissingNotifIcon = false;
+
     @Nullable
     @Override
     protected HeadlessJsTaskConfig getTaskConfig(Intent intent) {
@@ -198,11 +200,25 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     private Notification createNotification() {
         // Get app notification icon for better branding
-        int appIcon = getResources().getIdentifier("ic_stat_notify", "drawable", getPackageName());
+        int appIcon = getResources().getIdentifier(
+            MediaBrowserModule.ANDROID_AUTO_NOTIFICATION_ICON_NAME,
+            "drawable",
+            getPackageName()
+        );
+
         if (appIcon == 0) {
             appIcon = android.R.drawable.ic_media_play;
         }
         
+        if (appIcon == android.R.drawable.ic_media_play && !didWarnMissingNotifIcon) {
+            didWarnMissingNotifIcon = true;
+            Log.w(TAG,
+                "Android Auto notification icon drawable '" +
+                MediaBrowserModule.ANDROID_AUTO_NOTIFICATION_ICON_NAME +
+                "' not found in host app. Add it to android/app/src/main/res/drawable for correct branding."
+            );
+        }
+
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Android Auto")
             .setContentText("Connecting...")

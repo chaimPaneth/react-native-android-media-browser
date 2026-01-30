@@ -61,6 +61,9 @@ import com.bumptech.glide.load.resource.bitmap.CenterCrop;
 @ReactModule(name = MediaBrowserModule.NAME)
 public class MediaBrowserModule extends ReactContextBaseJavaModule {
   public static final String NAME = "MediaBrowser";
+  
+  // Single source of truth for the Android Auto foreground notification small icon name.
+  public static final String ANDROID_AUTO_NOTIFICATION_ICON_NAME = "ic_stat_notify";
 
   private boolean isReactNativeReady = false;
 
@@ -127,6 +130,32 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         }
       }
     });
+  }
+
+  @ReactMethod
+  public void hasAndroidAutoNotificationIcon(Promise promise) {
+      try {
+          int resId = getReactApplicationContext()
+              .getResources()
+              .getIdentifier(
+                  ANDROID_AUTO_NOTIFICATION_ICON_NAME,
+                  "drawable",
+                  getReactApplicationContext().getPackageName()
+              );
+
+          promise.resolve(resId != 0);
+      } catch (Throwable t) {
+          promise.reject(
+              "ICON_CHECK_FAILED",
+              "Failed to check for " + ANDROID_AUTO_NOTIFICATION_ICON_NAME,
+              t
+          );
+      }
+  }
+
+  @ReactMethod
+  public void getAndroidAutoNotificationIconName(Promise promise) {
+      promise.resolve(ANDROID_AUTO_NOTIFICATION_ICON_NAME);
   }
 
   @ReactMethod
