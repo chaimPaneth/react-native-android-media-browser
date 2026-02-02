@@ -1,6 +1,6 @@
 {
   "name": "react-native-android-media-browser",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Helper for setting MediaBrowserServiceCompat for android-auto, automotive and wearables.",
   "main": "src/index",
   "types": "src/index",
