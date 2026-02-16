@@ -95,6 +95,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 
                 // This ensures ACTION_MEDIA_ITEM_SELECTED is sent to headless service,
                 // which triggers setupMediaBrowser() to register the openPlayer callback
+                // RN will then call handleHeadlessMediaSelection through the proper flow
                 sendMediaItemToJS(mediaId);
                 
                 // Try to delegate to JWPlayerNativePlaybackHandler for actual playback
@@ -327,6 +328,17 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     final MediaItemsStore store = MediaItemsStore.getInstance();
 
+    // CRITICAL: Check if React context is active before proceeding
+    ReactContext reactContext = store.getReactApplicationContext();
+    boolean hasContext = reactContext != null;
+    boolean isActive = hasContext && reactContext.hasActiveReactInstance();
+    
+    if (!hasContext || !isActive) {
+      result.detach();
+      registerPendingLoad(parentMediaId, result, 60000); // Give 60s for context to become active
+      return;
+    }
+
     // Send browsable event only on FIRST browse (user navigation), not on subsequent queries.
     // IMPORTANT: ROOT is a boot signal. On cold start (force-stop), AA usually browses ROOT first
     // while React/JS is still loading. If we "consume" ROOT once and never retry, Android 12 can
@@ -348,8 +360,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
             lastRootKickMs = now;
             // Log.d(TAG, "  🔁 ROOT cold-start kick (hierarchy not ready) -> sending event to JS");
             sendBrowsableItemToJS(parentMediaId);
-          } else {
-            // Log.d(TAG, "  ⏱️ ROOT kick throttled (hierarchy not ready)");
           }
           // IMPORTANT: do NOT add ROOT to browsedItems while hierarchy isn't ready.
         } else {
@@ -385,10 +395,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // For lazy-loaded nodes, Android Auto can cache an empty response.
     // If we have no children yet, detach and wait for update (no polling).
     boolean isLazyNode = "Downloads".equals(parentMediaId) || parentMediaId.startsWith("series:") || parentMediaId.startsWith("authors:");
-    if (mediaItems.isEmpty() && isLazyNode) {
-      // Log.d(TAG, "  ⏳ lazy node has 0 children -> detaching and waiting for children update (no polling)");
+    boolean isHome = "Home".equals(parentMediaId);
+    
+    if (mediaItems.isEmpty() && (isLazyNode || isHome)) {
       result.detach();
-      registerPendingLoad(parentMediaId, result, 8000);
+      // Give Home 30s for slow network loads, others 8s
+      int timeout = isHome ? 30000 : 8000;
+      registerPendingLoad(parentMediaId, result, timeout);
       return;
     }
 
@@ -872,19 +885,21 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       return;
     }
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    boolean active = reactContext != null && reactContext.hasActiveReactInstance();
+    
     MediaBrowserCompat.MediaItem mediaItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
     
     if (mediaItem != null) {
+      CharSequence title = mediaItem.getDescription().getTitle();
+      CharSequence subtitle = mediaItem.getDescription().getSubtitle();
+      
       WritableMap mediaItemMap = Arguments.createMap();
       String mediaIdStr = mediaItem.getDescription().getMediaId();
       mediaItemMap.putString("id", mediaIdStr);
-
-      CharSequence title = mediaItem.getDescription().getTitle();
       if (title != null) {
         mediaItemMap.putString("title", title.toString());
       }
 
-      CharSequence subtitle = mediaItem.getDescription().getSubtitle();
       if (subtitle != null) {
         mediaItemMap.putString("subTitle", subtitle.toString());
       }
@@ -921,11 +936,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
       // Send to JS if React context is available
       if (reactContext != null) {
-        // Log.d(TAG, "  ✅ Emitting onMediaItemSelected event to JS");
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-          .emit("onMediaItemSelected", mediaItemMap);
-      } else {
-        Log.w(TAG, "  ⚠️ React context is NULL, cannot emit event");
+          .emit("onMediaItemSelected", mediaItemMap);        
       }
       
       // Send to JWPlayer for headless mode handling

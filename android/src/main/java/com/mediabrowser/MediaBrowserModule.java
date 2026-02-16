@@ -90,9 +90,17 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   @Override
   public void initialize() {
     super.initialize();
-
+    
+    boolean active = reactContext != null && reactContext.hasActiveReactInstance();
+    
     // React Native is ready, we can register the receiver
     isReactNativeReady = true;
+
+    // CRITICAL FIX: Notify MediaBrowserService that context is now active
+    // This will flush any pending AA load requests that were waiting
+    if (active) {
+      MediaItemsStore.getInstance().onReactContextReady();
+    }
 
     if (carConnection == null) {
       initializeCarConnection();

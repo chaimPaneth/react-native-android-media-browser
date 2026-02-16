@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.support.v4.media.MediaBrowserCompat;
+import android.util.Log;
 import android.support.v4.media.session.MediaControllerCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.MediaDescriptionCompat;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 public class MediaItemsStore extends NotificationListenerService {
+  private static final String TAG = "MediaItemsStore";
   private ReactApplicationContext reactContext;
 
   private static MediaItemsStore instance;
@@ -76,10 +78,8 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void setRootId(String rootId) {
     this.rootId = rootId;
-    // Notify listener when root is set - triggers Android Auto refresh
-    if (listener != null && rootId != null) {
-      listener.onMediaItemsUpdated(rootId);
-    }
+    // NOTE: Not notifying listener here - updateMediaItems will handle it with cache check
+    // Log.d(TAG, "MediaItemsStore rootId set to: " + rootId);
   }
 
   public String getRootId() {
@@ -96,7 +96,9 @@ public class MediaItemsStore extends NotificationListenerService {
         Map.Entry<String, List<MediaBrowserCompat.MediaItem>> firstEntry = hierarchy.entrySet().iterator().next();
         rootId = firstEntry.getKey();
       }
-      listener.onMediaItemsUpdated(rootId);
+      if (rootId != null) {
+        listener.onMediaItemsUpdated(rootId);
+      }
     }
   }
 
@@ -216,6 +218,17 @@ public class MediaItemsStore extends NotificationListenerService {
 
   public void setListener(MediaItemsUpdateListener listener) {
     this.listener = listener;
+  }
+
+  /**
+   * Called when React context becomes active after app restart
+   * Triggers pending load requests to be processed
+   */
+  public void onReactContextReady() {
+    // Notify the service (if listener is set) that we should retry pending loads
+    if (listener != null && rootId != null) {
+      listener.onMediaItemsUpdated(rootId);
+    }
   }
 
   /**
