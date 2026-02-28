@@ -821,4 +821,39 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       promise.reject("ERR_PLAY_FROM_MEDIA_ID", e.getMessage(), e);
     }
   }
+
+  /**
+   * Syncs the playback speed in the Android Auto MediaSession so the custom action button
+   * shows the correct icon and label when speed is changed from within the app.
+   */
+  @ReactMethod
+  public void setPlaybackSpeed(double speed) {
+    try {
+      MediaBrowserService service = MediaBrowserService.getInstance();
+      if (service != null) {
+        service.setPlaybackSpeed((float) speed);
+      }
+    } catch (Exception e) {
+      Log.w(NAME, "setPlaybackSpeed failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Returns the current playback speed from the Android Auto MediaSession.
+   * Used by the app to sync its speed UI after a headless session.
+   */
+  @ReactMethod
+  public void getPlaybackSpeed(Promise promise) {
+    try {
+      MediaBrowserService service = MediaBrowserService.getInstance();
+      if (service != null) {
+        promise.resolve((double) service.getPlaybackSpeed());
+      } else {
+        promise.resolve(1.0);
+      }
+    } catch (Exception e) {
+      Log.w(NAME, "getPlaybackSpeed failed: " + e.getMessage());
+      promise.resolve(1.0);
+    }
+  }
 }

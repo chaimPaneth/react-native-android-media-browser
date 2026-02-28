@@ -53,6 +53,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   public static final int NOTIFICATION_ID = 2005;
   public static final String ACTION_JS_READY = "com.mediabrowser.ACTION_JS_READY";
 
+  // Static instance for cross-component access (e.g., from MediaBrowserModule)
+  private static MediaBrowserService sInstance;
+
+  // Playback speed control state
+  private float currentPlaybackSpeed = 1.0f;
+  private static final String ACTION_CHANGE_SPEED = "com.mediabrowser.ACTION_CHANGE_SPEED";
+
   MediaSessionCompat mSession;
   private Set<String> browsedItems = new HashSet<>(); // Track items that have been browsed
   private static final long ROOT_KICK_INTERVAL_MS = 1000;
@@ -65,6 +72,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   @Override
   public void onCreate() {
     super.onCreate();
+    sInstance = this;
     // Log.d(TAG, "🚀 MediaBrowserService onCreate called");
 
     // Check if this is a fresh start after force-stop
@@ -190,13 +198,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 // Update MediaSession state
                 if (mSession != null) {
                     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
-                        .setState(PlaybackStateCompat.STATE_STOPPED, 0, 1.0f)
+                        .setState(PlaybackStateCompat.STATE_STOPPED, 0, currentPlaybackSpeed)
                         .setActions(PlaybackStateCompat.ACTION_PLAY |
                                    PlaybackStateCompat.ACTION_PAUSE |
                                    PlaybackStateCompat.ACTION_STOP |
                                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
                                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
                                    PlaybackStateCompat.ACTION_SEEK_TO)
+                        .addCustomAction(buildSpeedCustomAction())
                         .build());
                 }
                 
@@ -221,13 +230,23 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
             // Log.d(TAG, "⏩ onSeekTo called: position=" + pos);
             delegateToRNJWMediaSessionHelper("onSeekTo", String.valueOf(pos), null);
         }
+
+        @Override
+        public void onCustomAction(String action, android.os.Bundle extras) {
+            if (ACTION_CHANGE_SPEED.equals(action)) {
+                // Emit event to JS; the vehicle lib computes the next speed and
+                // calls setPlaybackSpeed() back with the result.
+                emitSpeedButtonPressedEvent();
+            }
+        }
     });
     
     // Set initial playback state
     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
-      .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
+      .setState(PlaybackStateCompat.STATE_NONE, 0, currentPlaybackSpeed)
       .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_STOP |
                  PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+      .addCustomAction(buildSpeedCustomAction())
       .build());
     
     // Activate the session
@@ -521,6 +540,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 java.lang.reflect.Method seekMethod = helperClass.getMethod("handleSeekTo", long.class);
                 Boolean seekResult = (Boolean) seekMethod.invoke(null, Long.parseLong(param1)); // param1 - position
                 return seekResult != null && seekResult;
+
+            case "onSetSpeed":
+                try {
+                    java.lang.reflect.Method setSpeedMethod = helperClass.getMethod("handleSetSpeed", float.class);
+                    Boolean setSpeedResult = (Boolean) setSpeedMethod.invoke(null, Float.parseFloat(param1));
+                    return setSpeedResult != null && setSpeedResult;
+                } catch (NoSuchMethodException speedEx) {
+                    Log.w(TAG, "handleSetSpeed not available: " + speedEx.getMessage());
+                    return false;
+                }
                 
             default:
                 return false;
@@ -531,6 +560,134 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         // Log.e(TAG, "🔧 [DELEGATE] Could not delegate to RNJWMediaSessionHelper for action=" + action + ": " + e.getMessage(), e);
         return false;
     }
+  }
+
+  // ==================== Speed Control Helpers ====================
+
+  /**
+   * Returns the R.drawable resource id for the given speed.
+   *
+   * Icons are the same PNGs used by CarPlay, copied from
+   * @orthodox-union/all-mobile-vehicle  →  src/images/tachometer-{tier}@3x.png
+   *
+   * Tier thresholds must stay in sync with getSpeedIconTier() in
+   * @orthodox-union/all-mobile-vehicle  →  src/utils/speed.ts
+   *
+   * Tier mapping:
+   *   slow     → speed <= 1.0
+   *   average  → speed <= 1.25
+   *   normal   → speed <= 1.5
+   *   fast     → speed <= 2.0
+   *   fastest  → speed > 2.0
+   */
+  private int getSpeedIconResource(float speed) {
+    if (speed <= 1.0f)  return R.drawable.ic_speed_slow;
+    if (speed <= 1.25f) return R.drawable.ic_speed_average;
+    if (speed <= 1.5f)  return R.drawable.ic_speed_normal;
+    if (speed <= 2.0f)  return R.drawable.ic_speed_fast;
+    return R.drawable.ic_speed_fastest;
+  }
+
+  /** Builds a PlaybackStateCompat.CustomAction for the speed button. */
+  private PlaybackStateCompat.CustomAction buildSpeedCustomAction() {
+    // Format: 1.0 → "1x", 1.25 → "1.25x", 1.5 → "1.5x"
+    String raw = String.format("%.2f", currentPlaybackSpeed);
+    raw = raw.replaceAll("0+$", "").replaceAll("\\.$", "");
+    String label = raw + "x";
+    return new PlaybackStateCompat.CustomAction.Builder(
+        ACTION_CHANGE_SPEED,
+        label,
+        getSpeedIconResource(currentPlaybackSpeed))
+        .build();
+  }
+
+  /**
+   * Public static method that returns the current speed custom action.
+   * Called by RNJWMediaSessionHelper as a fallback when no custom actions
+   * exist on the session (e.g. after a state wipe during media switch).
+   * Returns null if no MediaBrowserService instance is running.
+   */
+  public static android.support.v4.media.session.PlaybackStateCompat.CustomAction getSpeedCustomAction() {
+    if (sInstance == null) return null;
+    try {
+      return sInstance.buildSpeedCustomAction();
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  /** Updates the current PlaybackState to reflect the new speed (including new custom action label/icon). */
+  private void updatePlaybackStateSpeed() {
+    if (mSession == null) return;
+    try {
+      PlaybackStateCompat current = mSession.getController().getPlaybackState();
+      int state = (current != null) ? current.getState() : PlaybackStateCompat.STATE_NONE;
+      long position = (current != null) ? current.getPosition() : 0;
+      long actions = (current != null) ? current.getActions() :
+          (PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE |
+           PlaybackStateCompat.ACTION_STOP | PlaybackStateCompat.ACTION_SEEK_TO |
+           PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+      mSession.setPlaybackState(new PlaybackStateCompat.Builder()
+          .setState(state, position, currentPlaybackSpeed)
+          .setActions(actions)
+          .addCustomAction(buildSpeedCustomAction())
+          .build());
+    } catch (Exception e) {
+      Log.w(TAG, "updatePlaybackStateSpeed failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Public entry point for speed-button press, callable via reflection from
+   * RNJWMediaSessionHelper.onCustomAction when the callback has been replaced.
+   * Emits an event to JS so the vehicle lib can compute the next speed.
+   */
+  public void handleSpeedAction() {
+    emitSpeedButtonPressedEvent();
+  }
+
+  /**
+   * Emits an 'onSpeedButtonPressed' event to JS so the vehicle lib can cycle
+   * the speed and call setPlaybackSpeed() back with the computed value.
+   */
+  private void emitSpeedButtonPressedEvent() {
+    try {
+      ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+      if (reactContext != null && reactContext.hasActiveCatalystInstance()) {
+        reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit("onSpeedButtonPressed", null);
+      }
+    } catch (Exception e) {
+      Log.w(TAG, "emitSpeedButtonPressedEvent failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Public API: sets the playback speed, updates the Android Auto custom action
+   * button (icon + label), and delegates to JWPlayer so the actual rate matches.
+   *
+   * Called from JS (via MediaBrowserModule) in two scenarios:
+   *  1. Speed-button-pressed handler computed the next speed.
+   *  2. App-side player speed changed and AA UI needs to stay in sync.
+   */
+  public void setPlaybackSpeed(float speed) {
+    currentPlaybackSpeed = speed;
+    delegateToRNJWMediaSessionHelper("onSetSpeed", String.valueOf(speed), null);
+    updatePlaybackStateSpeed();
+  }
+
+  /**
+   * Returns the current playback speed tracked by the MediaSession.
+   * Called from JS (via MediaBrowserModule) so the app can sync its UI after
+   * a headless Android Auto session that changed the speed.
+   */
+  public float getPlaybackSpeed() {
+    return currentPlaybackSpeed;
+  }
+
+  /** Static accessor so MediaBrowserModule can reach this instance. */
+  public static MediaBrowserService getInstance() {
+    return sInstance;
   }
 
   public static void updateSeekPosition(String mediaId, long positionMs) {
@@ -586,6 +743,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   @Override
   public void onDestroy() {
     super.onDestroy();
+    sInstance = null;
     
     if (mSession != null) {
       mSession.setActive(false);
@@ -1082,13 +1240,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         // Update playback state to playing
         mSession.setPlaybackState(new PlaybackStateCompat.Builder()
-          .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
+          .setState(PlaybackStateCompat.STATE_PLAYING, 0, currentPlaybackSpeed)
           .setActions(PlaybackStateCompat.ACTION_PLAY |
                      PlaybackStateCompat.ACTION_PAUSE |
                      PlaybackStateCompat.ACTION_STOP |
                      PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
                      PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
                      PlaybackStateCompat.ACTION_SEEK_TO)
+          .addCustomAction(buildSpeedCustomAction())
           .build());
 
         // Show media notification
