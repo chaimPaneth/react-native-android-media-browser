@@ -119,6 +119,49 @@ const MediaBrowserWrapper = {
       listener,
     );
   },
+
+  /**
+   * Syncs the playback speed to the Android Auto MediaSession.
+   * Call this whenever the in-app player speed changes so the custom action
+   * button (icon + label) stays in sync with the actual playback rate.
+   */
+  setPlaybackSpeed: (speed: number) => {
+    MediaBrowser?.setPlaybackSpeed(speed);
+  },
+
+  /**
+   * Returns the current playback speed from the Android Auto MediaSession.
+   * The native side retains the speed across headless sessions, so this can
+   * be used to resync the app UI after a headless Android Auto session.
+   */
+  getPlaybackSpeed: (): Promise<number> => {
+    if (MediaBrowser?.getPlaybackSpeed) {
+      return MediaBrowser.getPlaybackSpeed();
+    }
+    return Promise.resolve(1);
+  },
+
+  /**
+   * Registers a listener for speed-change events that originate from the
+   * Android Auto UI (e.g. the user tapping the speed custom action button).
+   * Returns an EmitterSubscription that should be removed on cleanup.
+   *
+   * @deprecated Use {@link onSpeedButtonPressed} instead – the native side no
+   * longer computes the next speed; it only signals the button press.
+   */
+  onSpeedChange: (listener: (event: { speed: number }) => void): EmitterSubscription => {
+    return DeviceEventEmitter.addListener('onSpeedChange', listener);
+  },
+
+  /**
+   * Registers a listener for the Android Auto speed custom-action button press.
+   * The native side does NOT compute the next speed – the JS handler should call
+   * {@link getNextSpeed} from the shared speed utility and then invoke
+   * {@link setPlaybackSpeed} with the result.
+   */
+  onSpeedButtonPressed: (listener: () => void): EmitterSubscription => {
+    return DeviceEventEmitter.addListener('onSpeedButtonPressed', listener);
+  },
   
   // Method to register event handler for headless JS tasks
   registerEventHandler: (handler: (data: any) => void | Promise<void>) => {
