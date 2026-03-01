@@ -677,11 +677,39 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   /**
+   * Static sync-only entry point: updates the stored speed and refreshes the
+   * AA custom-action icon WITHOUT delegating back to JWPlayer (since the player
+   * already has the correct rate).
+   *
+   * Called via reflection from RNJWMediaSessionHelper.updatePlaybackState() when
+   * it detects the actual JWPlayer rate drifted from the stored speed — i.e. the
+   * in-app UI changed speed directly, bypassing the vehicle-aware wrapper.
+   */
+  public static void setPlaybackSpeedFromSync(float speed) {
+    if (sInstance != null) {
+      sInstance.currentPlaybackSpeed = speed;
+      sInstance.updatePlaybackStateSpeed();
+    }
+  }
+
+  /**
    * Returns the current playback speed tracked by the MediaSession.
    * Called from JS (via MediaBrowserModule) so the app can sync its UI after
    * a headless Android Auto session that changed the speed.
    */
   public float getPlaybackSpeed() {
+    // Try to read the actual rate from the active JWPlayer instance first.
+    // This covers the case where speed was changed from the in-app UI without
+    // going through MediaBrowserService.setPlaybackSpeed().
+    try {
+      Class<?> helperClass = Class.forName("com.jwplayer.rnjwplayer.session.RNJWMediaSessionHelper");
+      java.lang.reflect.Method getRate = helperClass.getMethod("getActualPlaybackRate");
+      float actualRate = (float) getRate.invoke(null);
+      if (actualRate > 0) {
+        currentPlaybackSpeed = actualRate; // keep stored value in sync
+        return actualRate;
+      }
+    } catch (Exception ignored) {}
     return currentPlaybackSpeed;
   }
 
