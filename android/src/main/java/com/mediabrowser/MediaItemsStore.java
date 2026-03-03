@@ -76,10 +76,10 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void setRootId(String rootId) {
-    MBLog.v(TAG, "→ setRootId(rootId=" + rootId + ")");
+    // MBLog.v(TAG, "→ setRootId(rootId=" + rootId + ")");
     this.rootId = rootId;
     // NOTE: Not notifying listener here - updateMediaItems will handle it with cache check
-    MBLog.d(TAG, "MediaItemsStore rootId set to: " + rootId);
+    // MBLog.d(TAG, "MediaItemsStore rootId set to: " + rootId);
   }
 
   public String getRootId() {
@@ -87,10 +87,26 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void setMediaItemsHierarchy(Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
-    MBLog.v(TAG, "→ setMediaItemsHierarchy(keys=" + hierarchy.keySet() + ")");
+    // MBLog.v(TAG, "→ setMediaItemsHierarchy(keys=" + hierarchy.keySet() + ")");
     this.mediaItemsHierarchy = hierarchy;
-    this.isHierarchyReady = true;
-    if (listener != null) {
+
+    // Only mark hierarchy as ready if at least one section has real children.
+    // This prevents Android Auto from flushing pending onLoadChildren with empty
+    // content when JS pushes a fallback/placeholder hierarchy before data loads.
+    boolean hasContent = false;
+    for (List<MediaBrowserCompat.MediaItem> items : hierarchy.values()) {
+      if (items != null && !items.isEmpty()) {
+        hasContent = true;
+        break;
+      }
+    }
+    if (hasContent) {
+      this.isHierarchyReady = true;
+    } else {
+      MBLog.d(TAG, "Hierarchy has no real children \u2013 keeping isHierarchyReady=" + this.isHierarchyReady);
+    }
+
+    if (listener != null && this.isHierarchyReady) {
       String rootId = getRootId();
       // If the root ID is null, try to get it from the first item in the hierarchy
       if (rootId == null && !hierarchy.isEmpty()) {
@@ -183,7 +199,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {
-    MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", count=" + updatedItems.size() + ", replace=" + replace + ")");
+    // MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", count=" + updatedItems.size() + ", replace=" + replace + ")");
     if (replace) {
       // Replace all existing items with the new list
       mediaItemsHierarchy.put(parentId, updatedItems);

@@ -47,6 +47,7 @@ import java.util.HashMap;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
+  private static final String EMPTY_RECENT_ROOT_ID = "__EMPTY_RECENT__";
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
   public static final int NOTIFICATION_ID = 2005;
@@ -164,6 +165,15 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         @Override
         public void onPlay() {
             MBLog.v(TAG, "→ onPlay()");
+            // Guard: ignore resume-play from Android Auto when no media is loaded.
+            // AA sends onPlay() immediately after connecting to resume the last
+            // session, but if no track metadata exists yet the player would open
+            // an empty Now Playing screen.
+            if (mSession != null && mSession.getController() != null
+                    && mSession.getController().getMetadata() == null) {
+                MBLog.d(TAG, "  ↩ Ignoring onPlay – no media metadata loaded yet");
+                return;
+            }
             delegateToRNJWMediaSessionHelper("onPlay", null, null);
         }
         
@@ -249,8 +259,11 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       .addCustomAction(buildSpeedCustomAction())
       .build());
     
-    // Activate the session
-    mSession.setActive(true);
+    // Do NOT activate the session here – an active session with STATE_NONE
+    // causes Android Auto to navigate directly to Now Playing (empty player).
+    // The session will be activated in updateMediaSessionForPlayback() when
+    // actual media metadata is available.
+    // mSession.setActive(true);
     
     // Create notification channel for media playback
     createNotificationChannel();
@@ -268,11 +281,15 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
       String appName = getApplicationInfo().loadLabel(getPackageManager()).toString();
       
+      // NOTE: Do NOT use MediaStyle here. A MediaStyle notification signals
+      // Android Auto that an active media session exists, causing it to
+      // navigate directly to the (empty) Now Playing screen on launch.
+      // The proper MediaStyle notification is created later in
+      // showMediaNotification() once real playback starts.
       NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
         .setContentTitle(appName)
         .setContentText("Android Auto is ready")
         .setSmallIcon(android.R.drawable.ic_media_play)
-        .setStyle(new MediaStyle().setMediaSession(mSession.getSessionToken()))
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setPriority(NotificationCompat.PRIORITY_LOW)
         .setOngoing(true);
@@ -374,6 +391,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                             @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
     MBLog.v(TAG, "→ onLoadChildren(parentMediaId=" + parentMediaId + ")");
 
+    // Return empty list for the synthetic "no recent content" root.
+    // This tells Android Auto there is nothing to resume.
+    if (EMPTY_RECENT_ROOT_ID.equals(parentMediaId)) {
+      MBLog.d(TAG, "  ↩ Returning empty children for EMPTY_RECENT_ROOT");
+      result.sendResult(new ArrayList<>());
+      return;
+    }
+
     final MediaItemsStore store = MediaItemsStore.getInstance();
 
     // CRITICAL: Check if React context is active before proceeding
@@ -413,7 +438,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         } else {
           final boolean isFirstBrowse = !browsedItems.contains(parentMediaId);
           if (isFirstBrowse) {
-            MBLog.d(TAG, "  🆕 First browse of: " + parentMediaId + " - sending event to JS");
+            // MBLog.d(TAG, "  🆕 First browse of: " + parentMediaId + " - sending event to JS");
             browsedItems.add(parentMediaId);
             sendBrowsableItemToJS(parentMediaId);
           }
@@ -480,7 +505,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         if (items == null) items = new ArrayList<>();
 
         // Log.d(TAG, "✅ pollForHierarchyReadyAndSend: hierarchyReady=true parentId=" + parentId + " items=" + items.size());
-        MBLog.d(TAG, "✅ pollForHierarchyReadyAndSend: hierarchyReady=true parentId=" + parentId + " items=" + items.size());
+        // MBLog.d(TAG, "✅ pollForHierarchyReadyAndSend: hierarchyReady=true parentId=" + parentId + " items=" + items.size());
         result.sendResult(items);
         return;
       }
@@ -500,7 +525,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       else if (attempt == 4) delay = 1000;
       else delay = 1500;
 
-      MBLog.d(TAG, "⏳ pollForHierarchyReadyAndSend: waiting parentId=" + parentId + " attempt=" + attempt + " delayMs=" + delay);
+      // MBLog.d(TAG, "⏳ pollForHierarchyReadyAndSend: waiting parentId=" + parentId + " attempt=" + attempt + " delayMs=" + delay);
 
       new Handler(Looper.getMainLooper()).postDelayed(
         new Runnable() {
@@ -842,7 +867,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
   @Override
   public void onMediaItemsUpdated(String parentId) {
-    MBLog.v(TAG, "→ onMediaItemsUpdated(parentId=" + parentId + ")");
+    // Only log top-level nodes to avoid flooding (leaf series:/authors: nodes are too many)
+    if (parentId == null || (!parentId.startsWith("series:") && !parentId.startsWith("authors:"))) {
+      MBLog.v(TAG, "→ onMediaItemsUpdated(parentId=" + parentId + ")");
+    }
     // Normalize parentId
     if (parentId == null || parentId.trim().isEmpty()) {
       parentId = MEDIA_ROOT_ID;
@@ -851,7 +879,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // If root changed, allow re-sending browse events for deep nodes
     java.util.Set<String> browsedSnapshot = null;
     if (MEDIA_ROOT_ID.equals(parentId)) {
-      MBLog.d(TAG, "  🧹 ROOT updated: refreshing browsed nodes and clearing cache");
+      // MBLog.d(TAG, "  🧹 ROOT updated: refreshing browsed nodes and clearing cache");
       browsedSnapshot = new java.util.HashSet<>(browsedItems);
       browsedItems.clear();
     }
@@ -922,7 +950,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void flushPendingIfReady(@NonNull final String parentId) {
-    MBLog.v(TAG, "→ flushPendingIfReady(parentId=" + parentId + ")");
+    // MBLog.v(TAG, "→ flushPendingIfReady(parentId=" + parentId + ")");
     try {
       Result<List<MediaBrowserCompat.MediaItem>> pending = pendingLoadResults.remove(parentId);
       Runnable timeout = pendingTimeouts.remove(parentId);
@@ -945,6 +973,27 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                                int clientUid,
                                @Nullable Bundle rootHints) {
     MBLog.v(TAG, "→ onGetRoot(clientPackage=" + clientPackageName + ", uid=" + clientUid + ")");
+
+    // Handle Android Auto EXTRA_RECENT hint.
+    // AA asks "do you have something to resume?" — only say "yes" when there is
+    // actual media metadata (a track was loaded).  When no metadata exists we
+    // return EMPTY_RECENT_ROOT_ID which resolves to an empty children list,
+    // telling AA "nothing to resume" so it opens the browse tree instead of the
+    // empty Now Playing screen.
+    if (rootHints != null) {
+      boolean wantsRecent = rootHints.getBoolean(
+          "android.service.media.extra.RECENT", false);
+      if (wantsRecent) {
+        boolean hasMetadata = mSession != null
+            && mSession.getController() != null
+            && mSession.getController().getMetadata() != null;
+        if (!hasMetadata) {
+          MBLog.d(TAG, "  ↩ EXTRA_RECENT requested but no media metadata – returning empty recent root");
+          return new BrowserRoot(EMPTY_RECENT_ROOT_ID, null);
+        }
+      }
+    }
+
     String rootId = MediaItemsStore.getInstance().getRootId();
     // Always return a root, even if empty - use default ROOT if rootId is null
     // This prevents Android Auto from showing "doesn't seem to be working" error
@@ -1228,7 +1277,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void sendBrowsableItemToJS(String parentMediaId) {
-    MBLog.d(TAG, "🔔 sendBrowsableItemToJS called for: " + parentMediaId);
+    // MBLog.d(TAG, "🔔 sendBrowsableItemToJS called for: " + parentMediaId);
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
     WritableMap event = Arguments.createMap();
     event.putString("id", parentMediaId);
@@ -1236,7 +1285,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
     // Send to JS if React context is available
     if (reactContext != null) {
-        MBLog.d(TAG, "  ✅ React context available, emitting onBrowsableItemSelected");
+        // MBLog.d(TAG, "  ✅ React context available, emitting onBrowsableItemSelected");
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit("onBrowsableItemSelected", event);
     } else {
@@ -1257,7 +1306,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     intent.putExtra("playableOrBrowsable", "BROWSABLE");
     
     try {
-      MBLog.d(TAG, "  📨 Starting headless service for browsable item");
+      // MBLog.d(TAG, "  📨 Starting headless service for browsable item");
       startService(intent);
     } catch (Exception e) {
       MBLog.e(TAG, "  ❌ Failed to start headless service: " + e.getMessage());
@@ -1314,6 +1363,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         // Set metadata
         mSession.setMetadata(metadataBuilder.build());
+        
+        // Activate the session now that we have real metadata.
+        // Doing this here (not in onCreate) prevents Android Auto from
+        // navigating to an empty Now Playing screen on launch.
+        if (!mSession.isActive()) {
+          MBLog.d(TAG, "  🟢 Activating media session (first playback)");
+          mSession.setActive(true);
+        }
         
         // Update playback state to playing
         mSession.setPlaybackState(new PlaybackStateCompat.Builder()

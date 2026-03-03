@@ -364,7 +364,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
 
   @ReactMethod
   public void updateMediaItems(String parentId, ReadableArray updatedItemsArray, boolean replace, Promise promise) {
-    MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", replace=" + replace + ")");
+    // MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", replace=" + replace + ")");
     if (updatedItemsArray == null) {
       MBLog.e(TAG, "updateMediaItems called with null updatedItems");
       promise.reject("ERR_NULL_UPDATED_ITEMS", "updatedItemsArray was null");
@@ -394,7 +394,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private void handleItemsArray(String parentId, ReadableArray itemsArray, boolean replace) {
-    MBLog.d(TAG, "Handling items array for parentId=" + parentId + ", count=" + itemsArray.size() + ", replace=" + replace);
+    // MBLog.d(TAG, "Handling items array for parentId=" + parentId + ", count=" + itemsArray.size() + ", replace=" + replace);
     List<MediaBrowserCompat.MediaItem> updatedItems = new ArrayList<>();
     for (int i = 0; i < itemsArray.size(); i++) {
       try {
@@ -438,7 +438,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private Map<String, List<MediaBrowserCompat.MediaItem>> buildMediaItemsHierarchy(ReadableMap itemsMap) throws Exception {
-    MBLog.d(TAG, "Building media items hierarchy from provided map");
+    // MBLog.d(TAG, "Building media items hierarchy from provided map");
     Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = new HashMap<>();
 
     String rootId = itemsMap.getString("id");
@@ -453,7 +453,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private void addMediaItemToHierarchy(ReadableMap itemMap, Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy, String parentId) throws Exception {
-    MBLog.d(TAG, "Adding media item to hierarchy: " + itemMap.getString("id") + " under parentId=" + parentId);
+    // MBLog.d(TAG, "Adding media item to hierarchy: " + itemMap.getString("id") + " under parentId=" + parentId);
     MediaBrowserCompat.MediaItem mediaItem = createMediaItem(itemMap);
 
     if (!hierarchy.containsKey(parentId)) {
@@ -471,7 +471,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private MediaBrowserCompat.MediaItem createMediaItem(ReadableMap itemMap) throws Exception {
-    MBLog.d(TAG, "Creating media item: " + itemMap.getString("id"));
+    // MBLog.d(TAG, "Creating media item: " + itemMap.getString("id"));
     String mediaId = itemMap.getString("id");
     MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
       .setMediaId(mediaId);
@@ -558,7 +558,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
     }
 
     String iconStr = itemMap.getString("icon");
-    MBLog.d(TAG, "Applying icon with validation: " + iconStr);
+    // MBLog.d(TAG, "Applying icon with validation: " + iconStr);
     if (iconStr == null || iconStr.trim().isEmpty()) {
       return; // empty icon
     }

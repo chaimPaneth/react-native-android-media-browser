@@ -55,7 +55,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     @Nullable
     @Override
     protected HeadlessJsTaskConfig getTaskConfig(Intent intent) {
-        MBLog.v(TAG, "→ getTaskConfig(action=" + (intent != null ? intent.getAction() : "null") + ")");
+        // MBLog.v(TAG, "→ getTaskConfig(action=" + (intent != null ? intent.getAction() : "null") + ")");
         if (intent == null) {
             return null;
         }
@@ -134,7 +134,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        MBLog.v(TAG, "→ onStartCommand(action=" + (intent != null ? intent.getAction() : "null") + ", startId=" + startId + ")");
+        // MBLog.v(TAG, "→ onStartCommand(action=" + (intent != null ? intent.getAction() : "null") + ", startId=" + startId + ")");
         lastStartId = startId;
 
         if (intent != null) {

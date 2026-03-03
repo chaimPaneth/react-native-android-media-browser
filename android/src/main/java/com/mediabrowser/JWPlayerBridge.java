@@ -16,7 +16,7 @@ public class JWPlayerBridge {
     private JWPlayerBridge() {}
     
     public static synchronized JWPlayerBridge getInstance() {
-        MBLog.v(TAG, "→ getInstance()");
+        // MBLog.v(TAG, "→ getInstance()");
         if (instance == null) {
             instance = new JWPlayerBridge();
         }
@@ -61,7 +61,7 @@ public class JWPlayerBridge {
      * Handle browsable item selection from MediaBrowserService
      */
     public void handleBrowsableItemSelected(Context context, String parentMediaId) {
-        MBLog.v(TAG, "→ handleBrowsableItemSelected(parentMediaId=" + parentMediaId + ")");
+        // MBLog.v(TAG, "→ handleBrowsableItemSelected(parentMediaId=" + parentMediaId + ")");
         // For browsable items, we don't need to do anything special in JWPlayer
         // The MediaBrowser will handle loading the child items
     }
