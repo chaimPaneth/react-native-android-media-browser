@@ -21,7 +21,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaDescriptionCompat;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.car.app.connection.CarConnection;
@@ -89,6 +88,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @Override
   public void initialize() {
+    MBLog.v(TAG, "→ initialize()");
     super.initialize();
     
     boolean active = reactContext != null && reactContext.hasActiveReactInstance();
@@ -108,6 +108,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private void initializeCarConnection() {
+    MBLog.d(TAG, "Initializing CarConnection");
     UiThreadUtil.runOnUiThread(new Runnable() {
       @Override
       public void run() {
@@ -142,6 +143,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void hasAndroidAutoNotificationIcon(Promise promise) {
+      MBLog.v(TAG, "→ hasAndroidAutoNotificationIcon()");
       try {
           int resId = getReactApplicationContext()
               .getResources()
@@ -163,11 +165,13 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void getAndroidAutoNotificationIconName(Promise promise) {
+      MBLog.v(TAG, "→ getAndroidAutoNotificationIconName()");
       promise.resolve(ANDROID_AUTO_NOTIFICATION_ICON_NAME);
   }
 
   @ReactMethod
   public void setMediaItems(ReadableMap itemsMap, Promise promise) {
+    MBLog.v(TAG, "→ setMediaItems()");
     try {
       Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsMap);
       String rootId = itemsMap.getString("id");
@@ -176,13 +180,14 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
       promise.resolve(null);
     } catch (Exception e) {
-      Log.e(TAG, "❌ setMediaItems FAILED", e);
+      MBLog.e(TAG, "❌ setMediaItems FAILED", e);
       promise.reject("ERROR", e);
     }
   }
 
   @ReactMethod
   public void pushMediaItem(String parentId, ReadableMap itemMap, Promise promise) {
+    MBLog.v(TAG, "→ pushMediaItem(parentId=" + parentId + ")");
     try {
       MediaBrowserCompat.MediaItem newItem = createMediaItem(itemMap);
       MediaItemsStore.getInstance().pushMediaItem(parentId, newItem);
@@ -194,6 +199,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void deleteMediaItem(String itemId, Promise promise) {
+    MBLog.v(TAG, "→ deleteMediaItem(itemId=" + itemId + ")");
     try {
       MediaItemsStore.getInstance().deleteMediaItem(itemId);
       promise.resolve(null);
@@ -204,6 +210,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void updateMediaItem(ReadableMap item, Promise promise) {
+    MBLog.v(TAG, "→ updateMediaItem(id=" + (item.hasKey("id") ? item.getString("id") : "?") + ")");
     try {
       if (item.hasKey("id")) {
         String mediaId = item.getString("id");
@@ -245,7 +252,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
               try {
                 descriptionBuilder.setIconUri(Uri.parse(iconUri));
               } catch (Exception e) {
-                Log.w(TAG, "Invalid iconUri provided: " + iconUri, e);
+                MBLog.w(TAG, "Invalid iconUri provided: " + iconUri, e);
               }
             }
           }
@@ -292,7 +299,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
                 JSONObject merged = mergeJsonObjects(baseInfo, updateInfo);
                 extras.putString("info", merged.toString());
               } catch (Exception e) {
-                Log.w(TAG, "Failed to merge extras.info from itemExtras", e);
+                MBLog.w(TAG, "Failed to merge extras.info from itemExtras", e);
               }
             }
             descriptionBuilder.setExtras(extras);
@@ -303,15 +310,15 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
           MediaItemsStore.getInstance().updateMediaItem(updatedItem);
           promise.resolve("Media item with id " + mediaId + " updated successfully.");
         } else {
-          Log.e(TAG, "Media item with id " + mediaId + " not found.");
+          MBLog.e(TAG, "Media item with id " + mediaId + " not found.");
           promise.reject("ERR_ITEM_NOT_FOUND", "Media item with id " + mediaId + " not found.");
         }
       } else {
-        Log.e(TAG, "Required key id was not provided.");
+        MBLog.e(TAG, "Required key id was not provided.");
         promise.reject("ERR_REQUIRED_KEY_NOT_PROVIDED", "Required key id was not provided.");
       }
     } catch (Exception e) {
-      Log.e(TAG, "Error updating media item", e);
+      MBLog.e(TAG, "Error updating media item", e);
       promise.reject("ERR_UPDATE_MEDIA_ITEM", e.getMessage(), e);
     }
   }
@@ -334,8 +341,9 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void updateMediaItems(String parentId, ReadableArray updatedItemsArray, boolean replace, Promise promise) {
+    MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", replace=" + replace + ")");
     if (updatedItemsArray == null) {
-      Log.e(TAG, "updateMediaItems called with null updatedItems");
+      MBLog.e(TAG, "updateMediaItems called with null updatedItems");
       promise.reject("ERR_NULL_UPDATED_ITEMS", "updatedItemsArray was null");
       return;
     }
@@ -344,7 +352,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       handleItemsArray(parentId, updatedItemsArray, replace);
       promise.resolve("Success");
     } catch (Exception e) {
-      Log.e(TAG, "Error updating media items", e);
+      MBLog.e(TAG, "Error updating media items", e);
       promise.reject("ERR_UPDATE_MEDIA_ITEMS", e.getMessage(), e);
     }
   }
@@ -363,6 +371,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private void handleItemsArray(String parentId, ReadableArray itemsArray, boolean replace) {
+    MBLog.d(TAG, "Handling items array for parentId=" + parentId + ", count=" + itemsArray.size() + ", replace=" + replace);
     List<MediaBrowserCompat.MediaItem> updatedItems = new ArrayList<>();
     for (int i = 0; i < itemsArray.size(); i++) {
       try {
@@ -378,7 +387,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
 
         updatedItems.add(mediaItem);
       } catch (Exception e) {
-        Log.e(TAG, "Error parsing JSON at index " + i + " in the items array", e);
+        MBLog.e(TAG, "Error parsing JSON at index " + i + " in the items array", e);
       }
     }
 
@@ -386,6 +395,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private void sendCarConnectionToJS(Integer carState) {
+    MBLog.d(TAG, "Car connection state changed: " + carState);
     if (isReactNativeReady) {
       getReactApplicationContext()
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
@@ -400,11 +410,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     try {
       getReactApplicationContext().startService(intent);
     } catch (Exception e) {
-      Log.e(TAG, "Failed to start headless service for car connection", e);
+      MBLog.e(TAG, "Failed to start headless service for car connection", e);
     }
   }
 
   private Map<String, List<MediaBrowserCompat.MediaItem>> buildMediaItemsHierarchy(ReadableMap itemsMap) throws Exception {
+    MBLog.d(TAG, "Building media items hierarchy from provided map");
     Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = new HashMap<>();
 
     String rootId = itemsMap.getString("id");
@@ -419,6 +430,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private void addMediaItemToHierarchy(ReadableMap itemMap, Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy, String parentId) throws Exception {
+    MBLog.d(TAG, "Adding media item to hierarchy: " + itemMap.getString("id") + " under parentId=" + parentId);
     MediaBrowserCompat.MediaItem mediaItem = createMediaItem(itemMap);
 
     if (!hierarchy.containsKey(parentId)) {
@@ -436,6 +448,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   }
 
   private MediaBrowserCompat.MediaItem createMediaItem(ReadableMap itemMap) throws Exception {
+    MBLog.d(TAG, "Creating media item: " + itemMap.getString("id"));
     String mediaId = itemMap.getString("id");
     MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
       .setMediaId(mediaId);
@@ -522,6 +535,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     }
 
     String iconStr = itemMap.getString("icon");
+    MBLog.d(TAG, "Applying icon with validation: " + iconStr);
     if (iconStr == null || iconStr.trim().isEmpty()) {
       return; // empty icon
     }
@@ -697,20 +711,21 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
   
   @ReactMethod
   public void registerEventHandler() {
+    MBLog.v(TAG, "→ registerEventHandler()");
     // This method is used to register the headless task event handler
     // The actual event handling is done in the HeadlessJsTaskService
-    // Log.d(TAG, "Event handler registered for MediaBrowser headless tasks");
     try {
       Intent intent = new Intent(getReactApplicationContext(), MediaBrowserService.class);
       intent.setAction(MediaBrowserService.ACTION_JS_READY);
       getReactApplicationContext().startService(intent);
     } catch (Throwable t) {
-      Log.w(TAG, "Failed to send ACTION_JS_READY to MediaBrowserService", t);
+      MBLog.e(TAG, "Failed to send ACTION_JS_READY to MediaBrowserService", t);
     }
   }
 
   @ReactMethod
   public void playFromMediaId(String mediaId, ReadableMap postData, Promise promise) {
+    MBLog.v(TAG, "→ playFromMediaId(mediaId=" + mediaId + ")");
     try {
       Bundle extras = null;
       
@@ -735,7 +750,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
                 extras.putString("info", infoStr);
                 extras.putString("infoJson", infoStr);
               } catch (Exception e) {
-                Log.w(TAG, "playFromMediaId: Failed to parse info string: " + e.getMessage());
+                MBLog.w(TAG, "playFromMediaId: Failed to parse info string: " + e.getMessage());
               }
             }
           }
@@ -775,7 +790,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
             }
             
           } catch (Exception e) {
-            Log.w(TAG, "playFromMediaId: Failed to create extras from postInfo: " + e.getMessage());
+            MBLog.w(TAG, "playFromMediaId: Failed to create extras from postInfo: " + e.getMessage());
             extras = null;
           }
         }
@@ -787,7 +802,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         if (mediaItem != null && mediaItem.getDescription().getExtras() != null) {
           extras = mediaItem.getDescription().getExtras();
         } else {
-          Log.w(TAG, "playFromMediaId: MediaItem not found in store for mediaId: " + mediaId);
+          MBLog.w(TAG, "playFromMediaId: MediaItem not found in store for mediaId: " + mediaId);
         }
       }
       
@@ -807,17 +822,17 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
             if (result != null && result) {
               promise.resolve("Playback started for mediaId: " + mediaId);
             } else {
-              Log.w(TAG, "playFromMediaId returned false for mediaId: " + mediaId);
+              MBLog.w(TAG, "playFromMediaId returned false for mediaId: " + mediaId);
               promise.reject("ERR_PLAYBACK_FAILED", "Failed to start playback for mediaId: " + mediaId);
             }
           } catch (Exception e) {
-            Log.e(TAG, "Failed to call RNJWMediaSessionHelper.handlePlayFromMediaId: " + e.getMessage());
+            MBLog.e(TAG, "Failed to call RNJWMediaSessionHelper.handlePlayFromMediaId: " + e.getMessage());
             promise.reject("ERR_PLAYBACK_EXCEPTION", "Exception during playback: " + e.getMessage(), e);
           }
         }
       });
     } catch (Exception e) {
-      Log.e(TAG, "Error in playFromMediaId: " + e.getMessage());
+      MBLog.e(TAG, "Error in playFromMediaId: " + e.getMessage());
       promise.reject("ERR_PLAY_FROM_MEDIA_ID", e.getMessage(), e);
     }
   }
@@ -828,13 +843,14 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
    */
   @ReactMethod
   public void setPlaybackSpeed(double speed) {
+    MBLog.v(TAG, "→ setPlaybackSpeed(speed=" + speed + ")");
     try {
       MediaBrowserService service = MediaBrowserService.getInstance();
       if (service != null) {
         service.setPlaybackSpeed((float) speed);
       }
     } catch (Exception e) {
-      Log.w(NAME, "setPlaybackSpeed failed: " + e.getMessage());
+      MBLog.w(NAME, "setPlaybackSpeed failed: " + e.getMessage());
     }
   }
 
@@ -844,6 +860,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
    */
   @ReactMethod
   public void getPlaybackSpeed(Promise promise) {
+    MBLog.v(TAG, "→ getPlaybackSpeed()");
     try {
       MediaBrowserService service = MediaBrowserService.getInstance();
       if (service != null) {
@@ -852,7 +869,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
         promise.resolve(1.0);
       }
     } catch (Exception e) {
-      Log.w(NAME, "getPlaybackSpeed failed: " + e.getMessage());
+      MBLog.w(NAME, "getPlaybackSpeed failed: " + e.getMessage());
       promise.resolve(1.0);
     }
   }

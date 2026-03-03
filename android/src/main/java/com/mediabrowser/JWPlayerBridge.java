@@ -1,7 +1,6 @@
 package com.mediabrowser;
 
 import android.content.Context;
-import android.util.Log;
 import java.util.Map;
 import java.lang.reflect.Method;
 
@@ -17,6 +16,7 @@ public class JWPlayerBridge {
     private JWPlayerBridge() {}
     
     public static synchronized JWPlayerBridge getInstance() {
+        MBLog.v(TAG, "→ getInstance()");
         if (instance == null) {
             instance = new JWPlayerBridge();
         }
@@ -29,6 +29,7 @@ public class JWPlayerBridge {
      */
     public void handleMediaItemSelected(Context context, String mediaId, String title, 
                                       String subtitle, String icon, Map<String, Object> extras) {
+        MBLog.v(TAG, "→ handleMediaItemSelected(mediaId=" + mediaId + ", title=" + title + ")");
         try {
             // Check if JWPlayer is available first
             if (!isJWPlayerAvailable()) {
@@ -50,9 +51,9 @@ public class JWPlayerBridge {
             handleMethod.invoke(handlerInstance, mediaId, title, subtitle, icon, extras);
             
         } catch (ClassNotFoundException e) {
-            Log.w(TAG, "JWPlayer handler class not found - JWPlayer may not be available");
+            MBLog.w(TAG, "JWPlayer handler class not found - JWPlayer may not be available");
         } catch (Exception e) {
-            Log.e(TAG, "Error handling media item selection via reflection", e);
+            MBLog.e(TAG, "Error handling media item selection via reflection", e);
         }
     }
     
@@ -60,6 +61,7 @@ public class JWPlayerBridge {
      * Handle browsable item selection from MediaBrowserService
      */
     public void handleBrowsableItemSelected(Context context, String parentMediaId) {
+        MBLog.v(TAG, "→ handleBrowsableItemSelected(parentMediaId=" + parentMediaId + ")");
         // For browsable items, we don't need to do anything special in JWPlayer
         // The MediaBrowser will handle loading the child items
     }
@@ -68,6 +70,7 @@ public class JWPlayerBridge {
      * Control JWPlayer playback from MediaSession callbacks
      */
     public void playFromMediaSession(Context context) {
+        MBLog.v(TAG, "→ playFromMediaSession()");
         try {
             if (!isJWPlayerAvailable()) {
                 return;
@@ -81,11 +84,12 @@ public class JWPlayerBridge {
             playMethod.invoke(handlerInstance);
             
         } catch (Exception e) {
-            Log.e(TAG, "Error controlling JWPlayer play via bridge", e);
+            MBLog.e(TAG, "Error controlling JWPlayer play via bridge", e);
         }
     }
     
     public void pauseFromMediaSession(Context context) {
+        MBLog.v(TAG, "→ pauseFromMediaSession()");
         try {
             if (!isJWPlayerAvailable()) {
                 return;
@@ -99,11 +103,12 @@ public class JWPlayerBridge {
             pauseMethod.invoke(handlerInstance);
             
         } catch (Exception e) {
-            Log.e(TAG, "Error controlling JWPlayer pause via bridge", e);
+            MBLog.e(TAG, "Error controlling JWPlayer pause via bridge", e);
         }
     }
     
     public void stopFromMediaSession(Context context) {
+        MBLog.v(TAG, "→ stopFromMediaSession()");
         try {
             if (!isJWPlayerAvailable()) {
                 return;
@@ -117,7 +122,7 @@ public class JWPlayerBridge {
             stopMethod.invoke(handlerInstance);
             
         } catch (Exception e) {
-            Log.e(TAG, "Error controlling JWPlayer stop via bridge", e);
+            MBLog.e(TAG, "Error controlling JWPlayer stop via bridge", e);
         }
     }
     
@@ -125,6 +130,7 @@ public class JWPlayerBridge {
      * Check if JWPlayer is available in the classpath
      */
     public boolean isJWPlayerAvailable() {
+        MBLog.v(TAG, "→ isJWPlayerAvailable()");
         try {
             Class.forName(JWPLAYER_HANDLER_CLASS);
             return true;

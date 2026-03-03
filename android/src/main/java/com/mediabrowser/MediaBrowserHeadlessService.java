@@ -5,7 +5,6 @@ import android.os.Bundle;
 import android.os.IBinder;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.media.session.MediaButtonReceiver;
-import android.util.Log;
 
 import com.facebook.react.ReactApplication;
 import com.facebook.react.ReactNativeHost;
@@ -56,6 +55,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     @Nullable
     @Override
     protected HeadlessJsTaskConfig getTaskConfig(Intent intent) {
+        MBLog.v(TAG, "→ getTaskConfig(action=" + (intent != null ? intent.getAction() : "null") + ")");
         if (intent == null) {
             return null;
         }
@@ -117,6 +117,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public void onHeadlessJsTaskFinish(int taskId) {
+        MBLog.v(TAG, "→ onHeadlessJsTaskFinish(taskId=" + taskId + ")");
         super.onHeadlessJsTaskFinish(taskId);
 
         // Headless task finished: stop immediately and remove any pending auto-stop.
@@ -127,11 +128,13 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
+        MBLog.v(TAG, "→ onBind()");
         return null;
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        MBLog.v(TAG, "→ onStartCommand(action=" + (intent != null ? intent.getAction() : "null") + ", startId=" + startId + ")");
         lastStartId = startId;
 
         if (intent != null) {
@@ -166,7 +169,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                             }
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "[onStartCommand] Error emitting event", e);
+                        MBLog.e(TAG, "[onStartCommand] Error emitting event", e);
                     }
                 }
                 
@@ -180,6 +183,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     }
 
     private void createNotificationChannel() {
+        MBLog.d(TAG, "Creating notification channel if needed");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Use the same channel as MediaBrowserService for consistency
             NotificationChannel channel = new NotificationChannel(
@@ -199,6 +203,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     }
 
     private Notification createNotification() {
+        MBLog.d(TAG, "Creating foreground service notification");
         // Get app notification icon for better branding
         int appIcon = getResources().getIdentifier(
             MediaBrowserModule.ANDROID_AUTO_NOTIFICATION_ICON_NAME,
@@ -212,7 +217,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
         
         if (appIcon == android.R.drawable.ic_media_play && !didWarnMissingNotifIcon) {
             didWarnMissingNotifIcon = true;
-            Log.w(TAG,
+            MBLog.e(TAG,
                 "Android Auto notification icon drawable '" +
                 MediaBrowserModule.ANDROID_AUTO_NOTIFICATION_ICON_NAME +
                 "' not found in host app. Add it to android/app/src/main/res/drawable for correct branding."
@@ -230,12 +235,14 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
 
     @Override
     public void onDestroy() {
+        MBLog.v(TAG, "→ onDestroy()");
         stopForegroundAndSelf();
         cancelAutoStop();
         super.onDestroy();
     }
 
     private void scheduleAutoStop() {
+        MBLog.d(TAG, "Scheduling auto-stop of foreground service in " + FOREGROUND_GRACE_MS + "ms");
         // Do NOT reset the timer on every event. Android Auto can dispatch frequent intents.
         // If we keep re-scheduling, this notification may never disappear.
         if (stopRunnable != null) {
@@ -246,7 +253,7 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
             try {
                 stopForegroundAndSelf();
             } catch (Throwable t) {
-                Log.w(TAG, "Failed to auto-stop foreground service", t);
+                MBLog.e(TAG, "Failed to auto-stop foreground service", t);
             }
         };
         mainHandler.postDelayed(stopRunnable, FOREGROUND_GRACE_MS);

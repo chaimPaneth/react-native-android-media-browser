@@ -10,10 +10,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.support.v4.media.MediaBrowserCompat;
-import android.util.Log;
+import android.support.v4.media.MediaDescriptionCompat;
 import android.support.v4.media.session.MediaControllerCompat;
 import android.support.v4.media.session.MediaSessionCompat;
-import android.support.v4.media.MediaDescriptionCompat;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 
@@ -77,9 +76,10 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void setRootId(String rootId) {
+    MBLog.v(TAG, "→ setRootId(rootId=" + rootId + ")");
     this.rootId = rootId;
     // NOTE: Not notifying listener here - updateMediaItems will handle it with cache check
-    // Log.d(TAG, "MediaItemsStore rootId set to: " + rootId);
+    MBLog.d(TAG, "MediaItemsStore rootId set to: " + rootId);
   }
 
   public String getRootId() {
@@ -87,6 +87,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void setMediaItemsHierarchy(Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
+    MBLog.v(TAG, "→ setMediaItemsHierarchy(keys=" + hierarchy.keySet() + ")");
     this.mediaItemsHierarchy = hierarchy;
     this.isHierarchyReady = true;
     if (listener != null) {
@@ -120,6 +121,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void pushMediaItem(String parentId, MediaBrowserCompat.MediaItem newItem) {
+    MBLog.v(TAG, "→ pushMediaItem(parentId=" + parentId + ", itemId=" + (newItem != null ? newItem.getMediaId() : "null") + ")");
     List<MediaBrowserCompat.MediaItem> children = mediaItemsHierarchy.get(parentId);
     if (children != null) {
       children.add(newItem);
@@ -130,6 +132,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void deleteMediaItem(String itemId) {
+    MBLog.v(TAG, "→ deleteMediaItem(itemId=" + itemId + ")");
     String parentId = null;
     for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
       List<MediaBrowserCompat.MediaItem> children = entry.getValue();
@@ -157,6 +160,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void updateMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
+    MBLog.v(TAG, "→ updateMediaItem(itemId=" + (updatedItem != null ? updatedItem.getMediaId() : "null") + ")");
     String itemId = updatedItem.getMediaId();
     String parentId = null;
     for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
@@ -179,6 +183,7 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {
+    MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", count=" + updatedItems.size() + ", replace=" + replace + ")");
     if (replace) {
       // Replace all existing items with the new list
       mediaItemsHierarchy.put(parentId, updatedItems);
@@ -225,6 +230,7 @@ public class MediaItemsStore extends NotificationListenerService {
    * Triggers pending load requests to be processed
    */
   public void onReactContextReady() {
+    MBLog.v(TAG, "→ onReactContextReady()");
     // Notify the service (if listener is set) that we should retry pending loads
     if (listener != null && rootId != null) {
       listener.onMediaItemsUpdated(rootId);
@@ -236,6 +242,7 @@ public class MediaItemsStore extends NotificationListenerService {
    * Used when recovering from force-stop or cold start
    */
   public void clearAllData() {
+    MBLog.v(TAG, "→ clearAllData()");
     mediaItemsHierarchy.clear();
     rootId = null;
     isHierarchyReady = false;
