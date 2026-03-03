@@ -39,6 +39,7 @@ import com.facebook.react.bridge.UiThreadUtil;
 import com.facebook.react.bridge.WritableNativeMap;
 import com.facebook.react.module.annotations.ReactModule;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+import com.facebook.react.bridge.LifecycleEventListener;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -58,7 +59,7 @@ import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.resource.bitmap.CenterCrop;
 
 @ReactModule(name = MediaBrowserModule.NAME)
-public class MediaBrowserModule extends ReactContextBaseJavaModule {
+public class MediaBrowserModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
   public static final String NAME = "MediaBrowser";
   
   // Single source of truth for the Android Auto foreground notification small icon name.
@@ -74,6 +75,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
     super(reactContext);
     this.reactContext = reactContext;
     MediaItemsStore.getInstance().setReactApplicationContext(reactContext);
+
+    // Register lifecycle listener so we can retry CarConnection when an Activity appears.
+    // This is critical for the headless→foreground transition (State 3→2): when
+    // MediaBrowserService cold-starts React without an Activity, initializeCarConnection()
+    // silently fails. onHostResume fires later when a real Activity appears.
+    reactContext.addLifecycleEventListener(this);
 
     initializeCarConnection();
   }
@@ -106,6 +113,22 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule {
       initializeCarConnection();
     }
   }
+
+  // ── LifecycleEventListener ──────────────────────────────────────────
+  // onHostResume fires when an Activity enters the foreground.
+  // In the headless cold-start path (State 3) there is no Activity, so
+  // CarConnection is never created. When the user later opens the app
+  // (transition 3→2) this callback retries initializeCarConnection().
+  @Override
+  public void onHostResume() {
+    if (carConnection == null && isReactNativeReady) {
+      MBLog.d(TAG, "onHostResume: retrying CarConnection init (was null)");
+      initializeCarConnection();
+    }
+  }
+
+  @Override public void onHostPause() { /* no-op */ }
+  @Override public void onHostDestroy() { /* no-op */ }
 
   private void initializeCarConnection() {
     MBLog.d(TAG, "Initializing CarConnection");

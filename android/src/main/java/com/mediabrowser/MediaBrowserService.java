@@ -300,26 +300,55 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           // Initialize React Native without launching Activity (YouTube Music approach)
           // Get the Application which implements ReactApplication
           android.app.Application app = getApplication();
+          boolean contextCreated = false;
 
-          // Access ReactNativeHost via reflection to avoid compile-time dependency
-          java.lang.reflect.Method getReactNativeHostMethod = app.getClass().getMethod("getReactNativeHost");
-          final Object reactNativeHost = getReactNativeHostMethod.invoke(app);
+          // ── Attempt 1: New Architecture (RN 0.73+ Bridgeless / ReactHost) ──
+          // With newArchEnabled=true the runtime is owned by ReactHost, not
+          // ReactInstanceManager. ReactHost.start() is the correct API to
+          // create the JS runtime headlessly.
+          try {
+            java.lang.reflect.Method getReactHostMethod = app.getClass().getMethod("getReactHost");
+            final Object reactHost = getReactHostMethod.invoke(app);
 
-          if (reactNativeHost != null) {
-            // Get or create ReactInstanceManager from ReactNativeHost
-            java.lang.reflect.Method getReactInstanceManagerMethod = reactNativeHost.getClass().getMethod("getReactInstanceManager");
-            final Object reactInstanceManager = getReactInstanceManagerMethod.invoke(reactNativeHost);
+            if (reactHost != null) {
+              // ReactHost.start() creates the JS runtime if not already running.
+              // It is idempotent: calling it when the host is already started is a no-op.
+              java.lang.reflect.Method startMethod = reactHost.getClass().getMethod("start");
+              startMethod.invoke(reactHost);
+              contextCreated = true;
+              MBLog.d(TAG, "  ✅ React context created via ReactHost.start() (New Architecture)");
+            }
+          } catch (NoSuchMethodException nsme) {
+            MBLog.d(TAG, "  ℹ️ getReactHost() not available, falling back to Old Architecture path");
+          } catch (Exception newArchEx) {
+            MBLog.w(TAG, "  ⚠️ ReactHost.start() failed, falling back to Old Architecture path: " + newArchEx.getMessage());
+          }
 
-            if (reactInstanceManager != null) {
-              // Check if React context already exists or needs to be created
-              java.lang.reflect.Method hasStartedMethod = reactInstanceManager.getClass().getMethod("hasStartedCreatingInitialContext");
-              Boolean hasStarted = (Boolean) hasStartedMethod.invoke(reactInstanceManager);
+          // ── Attempt 2: Old Architecture (ReactInstanceManager) ──
+          if (!contextCreated) {
+            try {
+              java.lang.reflect.Method getReactNativeHostMethod = app.getClass().getMethod("getReactNativeHost");
+              final Object reactNativeHost = getReactNativeHostMethod.invoke(app);
 
-              if (!hasStarted) {
-                // Create ReactContext - this initializes React AND loads JS bundle
-                java.lang.reflect.Method createReactContextMethod = reactInstanceManager.getClass().getMethod("createReactContextInBackground");
-                createReactContextMethod.invoke(reactInstanceManager);
+              if (reactNativeHost != null) {
+                java.lang.reflect.Method getReactInstanceManagerMethod = reactNativeHost.getClass().getMethod("getReactInstanceManager");
+                final Object reactInstanceManager = getReactInstanceManagerMethod.invoke(reactNativeHost);
+
+                if (reactInstanceManager != null) {
+                  java.lang.reflect.Method hasStartedMethod = reactInstanceManager.getClass().getMethod("hasStartedCreatingInitialContext");
+                  Boolean hasStarted = (Boolean) hasStartedMethod.invoke(reactInstanceManager);
+
+                  if (!hasStarted) {
+                    java.lang.reflect.Method createReactContextMethod = reactInstanceManager.getClass().getMethod("createReactContextInBackground");
+                    createReactContextMethod.invoke(reactInstanceManager);
+                    MBLog.d(TAG, "  ✅ React context created via ReactInstanceManager (Old Architecture)");
+                  } else {
+                    MBLog.d(TAG, "  ℹ️ ReactInstanceManager already started creating context");
+                  }
+                }
               }
+            } catch (Exception oldArchEx) {
+              MBLog.e(TAG, "  ❌ Old Architecture React init also failed", oldArchEx);
             }
           }
         } catch (Exception e) {

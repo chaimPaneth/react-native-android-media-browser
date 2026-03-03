@@ -7,6 +7,12 @@ const { MediaBrowser } = NativeModules;
 // Store for the event handler function
 let eventHandler: ((data: any) => void) | null = null;
 
+// Guard: prevent duplicate AppRegistry.registerHeadlessTask calls.
+// When Metro resolves the same module via different paths (e.g. package exports),
+// or when registerEventHandler is called more than once, the second registration
+// replaces the previous handler and React Native emits a noisy warning.
+let headlessTaskRegistered = false;
+
 // Constants defining different content styles.
 // They might change the way how media items are displayed in the UI (as a list, grid, etc.)
 export const CONTENT_STYLE_LIST_ITEM = 'CONTENT_STYLE_LIST_ITEM';
@@ -165,29 +171,35 @@ const MediaBrowserWrapper = {
   
   // Method to register event handler for headless JS tasks
   registerEventHandler: (handler: (data: any) => void | Promise<void>) => {
+    // Always update the handler so the latest caller wins
     eventHandler = handler;
 
     // One-time dev warning so engineers remember to add the Android Auto notif icon in the parent app
     void warnIfMissingAndroidAutoNotificationIcon();
 
-    // Register the headless task
-    const headlessTask = async (data: any) => {
-      try {
-        if (eventHandler) {
-          const result = eventHandler(data);
-          // If the handler returns a promise, await it
-          if (result && typeof result.then === 'function') {
-            await result;
+    // Only register the headless task with AppRegistry once.
+    // Subsequent calls update `eventHandler` above (the closure captures the
+    // mutable variable), so the newest handler is always invoked.
+    if (!headlessTaskRegistered) {
+      const headlessTask = async (data: any) => {
+        try {
+          if (eventHandler) {
+            const result = eventHandler(data);
+            // If the handler returns a promise, await it
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
           }
+          return Promise.resolve();
+        } catch (error) {
+          console.error('Error in MediaBrowser headless task:', error);
+          return Promise.resolve(); // Always return a resolved promise
         }
-        return Promise.resolve();
-      } catch (error) {
-        console.error('Error in MediaBrowser headless task:', error);
-        return Promise.resolve(); // Always return a resolved promise
-      }
-    };
-    
-    AppRegistry.registerHeadlessTask('MediaBrowserService', () => headlessTask);
+      };
+
+      AppRegistry.registerHeadlessTask('MediaBrowserService', () => headlessTask);
+      headlessTaskRegistered = true;
+    }
     
     // Call native method to enable headless task registration
     MediaBrowser?.registerEventHandler();
