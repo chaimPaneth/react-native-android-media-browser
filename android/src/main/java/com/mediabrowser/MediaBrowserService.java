@@ -31,6 +31,7 @@ import androidx.annotation.Nullable;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import org.json.JSONException;
@@ -378,7 +379,31 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       MBLog.e(TAG, "Failed to start foreground service", e);
     }
 
+    // ── Warm-start sync: if JWPlayer is already playing (e.g. phone app was
+    // active when AA reconnects), pull its current state into the session so
+    // AA sees the currently-playing track immediately.
+    syncSessionFromActivePlayer();
+
     setSessionToken(mSession.getSessionToken());
+  }
+
+  /**
+   * Ask RNJWMediaSessionHelper to re-point at the (possibly new) MediaSession
+   * singleton and re-push its current metadata + playback state.  This covers
+   * both UI player (RNJWPlayerView) and background player scenarios.
+   * Uses reflection so this module has no compile-time dependency on JWPlayer.
+   */
+  private void syncSessionFromActivePlayer() {
+    try {
+      Class<?> helperClass = Class.forName("com.jwplayer.rnjwplayer.session.RNJWMediaSessionHelper");
+      java.lang.reflect.Method refresh = helperClass.getMethod("refreshSessionReference");
+      refresh.invoke(null);  // static method
+      MBLog.d(TAG, "syncSessionFromActivePlayer: refreshSessionReference() called successfully");
+    } catch (ClassNotFoundException e) {
+      MBLog.d(TAG, "syncSessionFromActivePlayer: JWPlayer classes not available — skipping");
+    } catch (Exception e) {
+      MBLog.w(TAG, "syncSessionFromActivePlayer failed: " + e.getMessage());
+    }
   }
   
   /**
@@ -794,8 +819,34 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * Android Auto reads that stale state BEFORE onGetRoot() is even called on the
    * next connection, decides "this session can resume", and sends onPlay().
    */
+  /**
+   * Check if JWPlayer has an active player via reflection.
+   * PlaybackManager.hasActivePlayer() is an instance method, so we must get
+   * the singleton via getInstance() first.
+   */
+  private static boolean checkHasActivePlayer() {
+    try {
+      Class<?> pmClass = Class.forName("com.jwplayer.rnjwplayer.PlaybackManager");
+      java.lang.reflect.Method getInst = pmClass.getMethod("getInstance");
+      Object pm = getInst.invoke(null);  // getInstance() is static
+      java.lang.reflect.Method hasActive = pmClass.getMethod("hasActivePlayer");
+      return (boolean) hasActive.invoke(pm);  // hasActivePlayer() is instance method
+    } catch (Exception e) {
+      MBLog.w(TAG, "checkHasActivePlayer failed: " + e.getMessage());
+      return false;
+    }
+  }
+
   public static void clearSessionForReconnect() {
     if (sInstance == null || sInstance.mSession == null) return;
+
+    // If JWPlayer still has an active player, don't wipe the session —
+    // the user is still listening and we want to preserve Now Playing state.
+    if (checkHasActivePlayer()) {
+      MBLog.d(TAG, "clearSessionForReconnect: JWPlayer active — skipping session wipe");
+      return;
+    }
+
     try {
       sInstance.mSession.setMetadata(null);
       sInstance.mSession.setActive(false);
@@ -866,22 +917,27 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     MBLog.v(TAG, "→ onDestroy()");
     super.onDestroy();
 
-    if (mSession != null) {
-      // Fully reset the MediaSession singleton so the NEXT Android Auto
-      // connection sees actions=0 / metadata=null instead of stale state
-      // (e.g. actions=311 from a previous playback session).
-      // AA reads the session state BEFORE onGetRoot() is called, so any
-      // leftover actions cause it to show the empty Now Playing screen.
+    // Check if JWPlayer still has an active player via reflection.
+    // If it does, do NOT touch the session — JWPlayer owns it.
+    boolean hasActivePlayer = checkHasActivePlayer();
+
+    if (hasActivePlayer) {
+      MBLog.d(TAG, "  ℹ️ onDestroy: JWPlayer still active — leaving session untouched");
+    } else if (mSession != null) {
+      // No active player — clean the session so the NEXT Android Auto
+      // connection sees actions=0 / metadata=null instead of stale state.
       mSession.setMetadata(null);
       mSession.setPlaybackState(new PlaybackStateCompat.Builder()
           .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
           .setActions(0L)
           .build());
       mSession.setActive(false);
+      // Release fully when no active player — removes from dumpsys media_session
       mSession.release();
-      MBLog.d(TAG, "  🧹 onDestroy: session fully cleaned (active=false, actions=0, metadata=null)");
+      MBLog.d(TAG, "  🧹 onDestroy: session fully released (no active player)");
     }
     
+    // Release the singleton (safe — no JWPlayer holding reference)
     MediaSessionSingleton.release();
 
     sInstance = null;
@@ -1027,11 +1083,21 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       boolean wantsRecent = rootHints.getBoolean(
           "android.service.media.extra.RECENT", false);
       if (wantsRecent) {
-        boolean hasMetadata = mSession != null
-            && mSession.getController() != null
-            && mSession.getController().getMetadata() != null;
-        if (!hasMetadata) {
-          MBLog.d(TAG, "  ↩ EXTRA_RECENT requested but no media metadata – returning empty recent root");
+        // Check both metadata AND playback state — metadata alone can be stale
+        // from a previous session.  Only report "resumable" when actually
+        // PLAYING, PAUSED, or BUFFERING.
+        boolean canResume = false;
+        if (mSession != null && mSession.getController() != null) {
+          boolean hasMetadata = mSession.getController().getMetadata() != null;
+          PlaybackStateCompat psc = mSession.getController().getPlaybackState();
+          boolean hasActiveState = psc != null && (
+              psc.getState() == PlaybackStateCompat.STATE_PLAYING ||
+              psc.getState() == PlaybackStateCompat.STATE_PAUSED ||
+              psc.getState() == PlaybackStateCompat.STATE_BUFFERING);
+          canResume = hasMetadata && hasActiveState;
+        }
+        if (!canResume) {
+          MBLog.d(TAG, "  ↩ EXTRA_RECENT requested but no resumable media – returning empty recent root");
           return new BrowserRoot(EMPTY_RECENT_ROOT_ID, null);
         }
       }
