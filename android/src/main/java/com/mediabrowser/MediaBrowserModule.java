@@ -419,6 +419,17 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
 
   private void sendCarConnectionToJS(Integer carState) {
     MBLog.d(TAG, "Car connection state changed: " + carState);
+
+    // When AA disconnects (0 = CONNECTION_TYPE_NOT_CONNECTED), immediately
+    // clean the MediaSession so the NEXT connection starts with a blank state.
+    // The session is a long-lived singleton; without this cleanup it retains
+    // stale actions=311 which AA reads BEFORE onGetRoot() on the next connect,
+    // causing it to navigate to the empty Now Playing screen.
+    if (carState == 0) {
+      MBLog.d(TAG, "  AA disconnected – clearing MediaSession for next reconnect");
+      MediaBrowserService.clearSessionForReconnect();
+    }
+
     if (isReactNativeReady) {
       getReactApplicationContext()
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)

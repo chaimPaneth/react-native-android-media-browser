@@ -251,12 +251,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         }
     });
     
-    // Set initial playback state
+    // Set initial playback state with ZERO actions.
+    // Transport controls and custom actions are added later in
+    // updateMediaSessionForPlayback() when actual media is loaded.
+    // Setting actions here (e.g. ACTION_PLAY) causes Android Auto to
+    // think the session is playback-capable and show Now Playing immediately.
     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
-      .setState(PlaybackStateCompat.STATE_NONE, 0, currentPlaybackSpeed)
-      .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_STOP |
-                 PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-      .addCustomAction(buildSpeedCustomAction())
+      .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
+      .setActions(0L)
       .build());
     
     // Do NOT activate the session here – an active session with STATE_NONE
@@ -781,6 +783,32 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     return sInstance;
   }
 
+  /**
+   * Reset the MediaSession to a completely clean state.
+   * Called when Android Auto disconnects so the NEXT connection sees
+   * actions=0 / active=false / metadata=null and does NOT navigate to
+   * the empty Now Playing screen.
+   *
+   * Root cause: MediaSessionSingleton is a long-lived singleton that retains
+   * whatever playback state was last set (e.g. actions=311 after playing a track).
+   * Android Auto reads that stale state BEFORE onGetRoot() is even called on the
+   * next connection, decides "this session can resume", and sends onPlay().
+   */
+  public static void clearSessionForReconnect() {
+    if (sInstance == null || sInstance.mSession == null) return;
+    try {
+      sInstance.mSession.setMetadata(null);
+      sInstance.mSession.setActive(false);
+      sInstance.mSession.setPlaybackState(new PlaybackStateCompat.Builder()
+          .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
+          .setActions(0L)
+          .build());
+      MBLog.d(TAG, "🧹 clearSessionForReconnect: session cleaned (active=false, actions=0, metadata=null)");
+    } catch (Exception e) {
+      MBLog.w(TAG, "clearSessionForReconnect failed: " + e.getMessage());
+    }
+  }
+
   public static void updateSeekPosition(String mediaId, long positionMs) {
     MBLog.v(TAG, "→ updateSeekPosition(mediaId=" + mediaId + ", positionMs=" + positionMs + ")");
     if (mediaId == null) {
@@ -837,11 +865,26 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   public void onDestroy() {
     MBLog.v(TAG, "→ onDestroy()");
     super.onDestroy();
-    sInstance = null;
-    
+
     if (mSession != null) {
+      // Fully reset the MediaSession singleton so the NEXT Android Auto
+      // connection sees actions=0 / metadata=null instead of stale state
+      // (e.g. actions=311 from a previous playback session).
+      // AA reads the session state BEFORE onGetRoot() is called, so any
+      // leftover actions cause it to show the empty Now Playing screen.
+      mSession.setMetadata(null);
+      mSession.setPlaybackState(new PlaybackStateCompat.Builder()
+          .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
+          .setActions(0L)
+          .build());
       mSession.setActive(false);
+      mSession.release();
+      MBLog.d(TAG, "  🧹 onDestroy: session fully cleaned (active=false, actions=0, metadata=null)");
     }
+    
+    MediaSessionSingleton.release();
+
+    sInstance = null;
     stopForegroundAndSelf();
   }
 
