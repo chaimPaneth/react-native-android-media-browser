@@ -436,15 +436,23 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
         .emit("onCarConnectionChanged", carState);
     }
     
-    // Trigger headless service for background/killed app scenario
-    Intent intent = new Intent(getReactApplicationContext(), MediaBrowserHeadlessService.class);
-    intent.setAction(MediaBrowserHeadlessService.ACTION_CAR_CONNECTION_CHANGED);
-    intent.putExtra("connectionType", carState);
-    
-    try {
-      getReactApplicationContext().startService(intent);
-    } catch (Exception e) {
-      MBLog.e(TAG, "Failed to start headless service for car connection", e);
+    // Trigger headless service only when app is NOT in foreground (RN not ready),
+    // or on disconnect (state 0) which needs cleanup regardless.
+    // When RN IS ready, the JS-side RefreshService handles connect events directly
+    // via the onCarConnectionChanged event above — starting HeadlessService
+    // unnecessarily can cause side effects (duplicate content rebuilds).
+    if (!isReactNativeReady || carState == 0) {
+      Intent intent = new Intent(getReactApplicationContext(), MediaBrowserHeadlessService.class);
+      intent.setAction(MediaBrowserHeadlessService.ACTION_CAR_CONNECTION_CHANGED);
+      intent.putExtra("connectionType", carState);
+      
+      try {
+        getReactApplicationContext().startService(intent);
+      } catch (Exception e) {
+        MBLog.e(TAG, "Failed to start headless service for car connection", e);
+      }
+    } else {
+      MBLog.d(TAG, "  ↩ RN is active, skipping headless service for car state " + carState);
     }
   }
 
@@ -907,4 +915,28 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
       promise.resolve(1.0);
     }
   }
+
+  @ReactMethod
+  public void setSearchResults(ReadableArray resultsArray, Promise promise) {
+    MBLog.i(TAG, "🔍 setSearchResults: received " + (resultsArray != null ? resultsArray.size() : 0) + " items from JS");
+    try {
+      List<MediaBrowserCompat.MediaItem> searchResults = new ArrayList<>();
+      if (resultsArray != null) {
+        for (int i = 0; i < resultsArray.size(); i++) {
+          ReadableMap itemMap = resultsArray.getMap(i);
+          MediaBrowserCompat.MediaItem mediaItem = createMediaItem(itemMap);
+          searchResults.add(mediaItem);
+          if (i < 3) MBLog.d(TAG, "  📋 item[" + i + "]: " + (itemMap.hasKey("title") ? itemMap.getString("title") : "no-title"));
+        }
+        if (resultsArray.size() > 3) MBLog.d(TAG, "  ... and " + (resultsArray.size() - 3) + " more");
+      }
+      MBLog.i(TAG, "  📤 Passing " + searchResults.size() + " MediaItems to MediaItemsStore.setSearchResults()");
+      MediaItemsStore.getInstance().setSearchResults(searchResults);
+      promise.resolve(null);
+    } catch (Exception e) {
+      MBLog.e(TAG, "  ❌ setSearchResults failed: " + e.getMessage(), e);
+      promise.reject("ERR_SET_SEARCH_RESULTS", e.getMessage(), e);
+    }
+  }
+
 }

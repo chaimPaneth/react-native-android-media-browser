@@ -26,6 +26,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
 import androidx.annotation.NonNull;
+import androidx.media.utils.MediaConstants;
 import androidx.annotation.Nullable;
 
 import com.facebook.react.bridge.Arguments;
@@ -69,6 +70,17 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   // Pending async loads (event-driven). Avoid polling loops.
   private final Map<String, Result<List<MediaBrowserCompat.MediaItem>>> pendingLoadResults = new HashMap<>();
   private final Map<String, Runnable> pendingTimeouts = new HashMap<>();
+
+  // Search debounce – wait for typing to pause before querying JS
+  private final android.os.Handler searchDebounceHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+  private Runnable searchDebounceRunnable;
+  private int searchVersion = 0;
+
+  // Event-driven search: hold the pending Result and resolve it from onSearchResultsUpdated
+  private Result<List<MediaBrowserCompat.MediaItem>> pendingSearchResult;
+  private boolean pendingSearchReadyForResults = false;
+  private Runnable searchTimeoutRunnable;
+  private String lastSearchQuery = "";
 
   @Override
   public void onCreate() {
@@ -249,6 +261,20 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 // calls setPlaybackSpeed() back with the result.
                 emitSpeedButtonPressedEvent();
             }
+        }
+
+        @Override
+        public void onPlayFromSearch(String query, Bundle extras) {
+            MBLog.i(TAG, "🔍 onPlayFromSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
+            super.onPlayFromSearch(query, extras);
+            sendSearchQueryToJS(query, extras);
+        }
+
+        @Override
+        public void onPrepareFromSearch(String query, Bundle extras) {
+            MBLog.i(TAG, "🔍 onPrepareFromSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
+            super.onPrepareFromSearch(query, extras);
+            sendSearchQueryToJS(query, extras);
         }
     });
     
@@ -983,8 +1009,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       browsedItems.clear();
     }
 
-    // Always notify the specific parent
-    notifyChildrenChanged(parentId);
+    // Always notify the specific parent (but NOT for SEARCH_RESULTS –
+    // search results are delivered via sendResult in onSearch flow;
+    // notifyChildrenChanged would cause AA to re-render search UI and clear the input field)
+    if (!"SEARCH_RESULTS".equals(parentId)) {
+      notifyChildrenChanged(parentId);
+    }
 
     // If AA is waiting on a detached Result for this parent, flush it now.
     flushPendingIfReady(parentId);
@@ -1108,7 +1138,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     // This prevents Android Auto from showing "doesn't seem to be working" error
     String finalRootId = rootId != null ? rootId : MEDIA_ROOT_ID;
     MBLog.d(TAG, "  ✅ Returning rootId: " + finalRootId);
-    return new BrowserRoot(finalRootId, null);
+    Bundle searchExtras = new Bundle();
+    searchExtras.putBoolean(MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_SEARCH_SUPPORTED, true);
+    return new BrowserRoot(finalRootId, searchExtras);
   }
 
   /**
@@ -1645,4 +1677,160 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     stopForeground(true);
     stopSelf();
   }
+
+  private void sendSearchQueryToJS(String query, Bundle extras) {
+    MBLog.i(TAG, "🔍 sendSearchQueryToJS(query=\"" + query + "\")");
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    if (reactContext == null) {
+      MBLog.w(TAG, "  ❌ sendSearchQueryToJS: reactContext is NULL");
+      return;
+    }
+    if (!reactContext.hasActiveReactInstance()) {
+      MBLog.w(TAG, "  ❌ sendSearchQueryToJS: React instance NOT active");
+      return;
+    }
+    if (query == null || query.isEmpty()) {
+      MBLog.d(TAG, "  ↩ sendSearchQueryToJS: query is null/empty – skipping");
+      return;
+    }
+    WritableMap event = Arguments.createMap();
+    event.putString("query", query);
+    if (extras != null) {
+      WritableMap extrasMap = Arguments.createMap();
+      for (String key : extras.keySet()) {
+        Object value = extras.get(key);
+        if (value instanceof String) {
+          extrasMap.putString(key, (String) value);
+        }
+      }
+      event.putMap("extras", extrasMap);
+      MBLog.d(TAG, "  📦 sendSearchQueryToJS: extras keys=" + extras.keySet());
+    }
+    MBLog.i(TAG, "  📤 Emitting 'onSearchQuery' event to JS with query=\"" + query + "\"");
+    reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+      .emit("onSearchQuery", event);
+  }
+
+  /**
+   * Handle search results from JS side - called via MediaItemsStore
+   */
+  public void onSearchResultsUpdated(List<MediaBrowserCompat.MediaItem> results) {
+    int count = results != null ? results.size() : 0;
+    MBLog.i(TAG, "🔍 onSearchResultsUpdated: received " + count + " results from JS");
+    if (count > 0) {
+      for (int i = 0; i < Math.min(count, 3); i++) {
+        MBLog.d(TAG, "  📋 result[" + i + "]: " + results.get(i).getDescription().getTitle());
+      }
+      if (count > 3) MBLog.d(TAG, "  ... and " + (count - 3) + " more");
+    }
+
+    // Event-driven: resolve the pending search Result directly
+    if (pendingSearchResult != null && pendingSearchReadyForResults) {
+      // Cancel the safety-timeout since results arrived in time
+      if (searchTimeoutRunnable != null) {
+        searchDebounceHandler.removeCallbacks(searchTimeoutRunnable);
+        searchTimeoutRunnable = null;
+      }
+      MBLog.i(TAG, "  ✅ Resolving pending search result with " + count + " items");
+      try { pendingSearchResult.sendResult(results != null ? results : new ArrayList<>()); } catch (Exception e) { MBLog.w(TAG, "  ⚠️ sendResult failed (already sent?)", e); }
+      pendingSearchResult = null;
+      pendingSearchReadyForResults = false;
+    } else {
+      MBLog.d(TAG, "  ↩ No pending search result or not ready – skipping (stale intermediate results)");
+    }
+  }
+
+
+  @Override
+  public void onSearch(@NonNull String query, Bundle extras,
+                       @NonNull Result<List<MediaBrowserCompat.MediaItem>> result) {
+    MBLog.i(TAG, "🔍 onSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
+
+    if (query == null || query.trim().isEmpty()) {
+      MBLog.d(TAG, "  ↩ onSearch: empty query – returning empty list");
+      result.sendResult(new ArrayList<>());
+      return;
+    }
+
+    // Cache hit: same query already has results – return them immediately (e.g. search button click)
+    if (query.equals(lastSearchQuery)) {
+      List<MediaBrowserCompat.MediaItem> cached = MediaItemsStore.getInstance().getSearchResults();
+      if (cached != null && !cached.isEmpty()) {
+        MBLog.i(TAG, "  ✅ onSearch: cache hit for \"" + query + "\" – returning " + cached.size() + " cached results");
+        result.sendResult(cached);
+        return;
+      }
+    }
+
+    // Cancel any previous debounce timer – the user is still typing
+    if (searchDebounceRunnable != null) {
+      searchDebounceHandler.removeCallbacks(searchDebounceRunnable);
+      MBLog.d(TAG, "  🔄 Cancelled previous search debounce timer");
+    }
+
+    // Cancel safety timeout
+    if (searchTimeoutRunnable != null) {
+      searchDebounceHandler.removeCallbacks(searchTimeoutRunnable);
+      searchTimeoutRunnable = null;
+    }
+
+    // KEY FIX: Resolve any previous detached Result so AA doesn't have dangling Results
+    if (pendingSearchResult != null) {
+      MBLog.d(TAG, "  🔄 Resolving previous pending result with empty list (proper cleanup)");
+      try { pendingSearchResult.sendResult(new ArrayList<>()); } catch (Exception e) { MBLog.w(TAG, "  ⚠️ sendResult on previous pending failed", e); }
+      pendingSearchResult = null;
+      pendingSearchReadyForResults = false;
+    }
+
+    // Increment version to invalidate older queries
+    final int thisVersion = ++searchVersion;
+
+    // Detach result so we can respond asynchronously
+    result.detach();
+
+    // KEY FIX: Store pending result IMMEDIATELY after detach so every detached Result is tracked
+    pendingSearchResult = result;
+    pendingSearchReadyForResults = false; // Not ready until debounce fires and sends to JS
+
+    // Debounce: wait for typing to pause before sending query to JS
+    final int DEBOUNCE_MS = 1000;
+    searchDebounceRunnable = () -> {
+      // If another onSearch() has already superseded us, skip
+      if (thisVersion != searchVersion) {
+        MBLog.d(TAG, "  🔄 Search v" + thisVersion + " superseded by v" + searchVersion + " – skipping");
+        return;
+      }
+
+      MBLog.i(TAG, "  ⏱️ Debounce fired for query=\"" + query + "\" (v" + thisVersion + ") – sending to JS");
+
+      // Track the last query so we can cache-hit on repeat searches
+      lastSearchQuery = query;
+
+      // Clear previous search results now that we're about to search
+      MediaItemsStore.getInstance().clearSearchResults();
+
+      // KEY FIX: Mark ready ONLY now – prevents stale JS results from resolving this Result
+      pendingSearchReadyForResults = true;
+
+      // Send the query to JS
+      sendSearchQueryToJS(query, extras);
+
+      // Safety timeout: if JS never responds, send empty after 10s
+      final int SEARCH_TIMEOUT_MS = 10000;
+      searchTimeoutRunnable = () -> {
+        if (pendingSearchResult == result) {
+          MBLog.w(TAG, "  ⏱️ Search timeout after " + SEARCH_TIMEOUT_MS + "ms – returning empty (v" + thisVersion + ")");
+          try { pendingSearchResult.sendResult(new ArrayList<>()); } catch (Exception e) { /* already sent */ }
+          pendingSearchResult = null;
+          pendingSearchReadyForResults = false;
+          searchTimeoutRunnable = null;
+        }
+      };
+      searchDebounceHandler.postDelayed(searchTimeoutRunnable, SEARCH_TIMEOUT_MS);
+    };
+
+    MBLog.d(TAG, "  ⏳ Debounce: waiting " + DEBOUNCE_MS + "ms for typing to stop (v" + thisVersion + ")");
+    searchDebounceHandler.postDelayed(searchDebounceRunnable, DEBOUNCE_MS);
+  }
+
 }

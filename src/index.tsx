@@ -115,6 +115,11 @@ const MediaBrowserWrapper = {
   updateMediaItems: (parentId: string, updatedItems: MediaItem[], replace: boolean) => {
     MediaBrowser?.updateMediaItems(parentId, updatedItems, replace);
   },
+  // Send search results back to the native MediaBrowserService.
+  // Called from the search handler after processing a search query.
+  setSearchResults: (items: MediaItem[]): Promise<void> => {
+    return MediaBrowser?.setSearchResults(items);
+  },
   // Method to register a listener for car connection change events.
   onCarConnectionChanged: (listener: EmitterSubscription) => {
     if (carConnectedListener) {

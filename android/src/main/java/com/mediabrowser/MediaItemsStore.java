@@ -32,6 +32,8 @@ public class MediaItemsStore extends NotificationListenerService {
 
   private Map<String, List<MediaBrowserCompat.MediaItem>> mediaItemsHierarchy;
 
+  private List<MediaBrowserCompat.MediaItem> searchResults = new ArrayList<>();
+
   private String rootId;
   
   // Indicates whether JS has populated the browse hierarchy at least once.
@@ -231,8 +233,37 @@ public class MediaItemsStore extends NotificationListenerService {
     }
   }
 
+
+  public List<MediaBrowserCompat.MediaItem> getSearchResults() {
+    int count = searchResults != null ? searchResults.size() : 0;
+    MBLog.d(TAG, "🔍 getSearchResults: returning " + count + " results");
+    return searchResults != null ? searchResults : new ArrayList<>();
+  }
+
+  public void setSearchResults(List<MediaBrowserCompat.MediaItem> results) {
+    int count = results != null ? results.size() : 0;
+    MBLog.i(TAG, "🔍 setSearchResults: storing " + count + " results");
+    this.searchResults = results != null ? results : new ArrayList<>();
+    // Store in hierarchy under SEARCH_RESULTS key for onLoadChildren
+    mediaItemsHierarchy.put("SEARCH_RESULTS", this.searchResults);
+    MBLog.d(TAG, "  📦 Stored in hierarchy under 'SEARCH_RESULTS'");
+    if (listener != null) {
+      MBLog.d(TAG, "  📢 Notifying listener: onMediaItemsUpdated('SEARCH_RESULTS') + onSearchResultsUpdated");
+      listener.onMediaItemsUpdated("SEARCH_RESULTS");
+      listener.onSearchResultsUpdated(this.searchResults);
+    } else {
+      MBLog.w(TAG, "  ⚠️ No listener registered – search results stored but not notified!");
+    }
+  }
+
+  public void clearSearchResults() {
+    this.searchResults = new ArrayList<>();
+    mediaItemsHierarchy.remove("SEARCH_RESULTS");
+  }
+
   public interface MediaItemsUpdateListener {
     void onMediaItemsUpdated(String parentId);
+    default void onSearchResultsUpdated(List<MediaBrowserCompat.MediaItem> results) {}
   }
 
   private MediaItemsUpdateListener listener;
