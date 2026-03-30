@@ -267,14 +267,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         public void onPlayFromSearch(String query, Bundle extras) {
             MBLog.i(TAG, "🔍 onPlayFromSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
             super.onPlayFromSearch(query, extras);
-            sendSearchQueryToJS(query, extras);
+            sendSearchQueryToJS(query, extras, "play");
         }
 
         @Override
         public void onPrepareFromSearch(String query, Bundle extras) {
             MBLog.i(TAG, "🔍 onPrepareFromSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
             super.onPrepareFromSearch(query, extras);
-            sendSearchQueryToJS(query, extras);
+            sendSearchQueryToJS(query, extras, "prepare");
         }
     });
     
@@ -1679,7 +1679,11 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void sendSearchQueryToJS(String query, Bundle extras) {
-    MBLog.i(TAG, "🔍 sendSearchQueryToJS(query=\"" + query + "\")");
+    sendSearchQueryToJS(query, extras, "search");
+  }
+
+  private void sendSearchQueryToJS(String query, Bundle extras, String action) {
+    MBLog.i(TAG, "🔍 sendSearchQueryToJS(query=\"" + query + "\", action=\"" + action + "\")");
     ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
     if (reactContext == null) {
       MBLog.w(TAG, "  ❌ sendSearchQueryToJS: reactContext is NULL");
@@ -1706,7 +1710,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       event.putMap("extras", extrasMap);
       MBLog.d(TAG, "  📦 sendSearchQueryToJS: extras keys=" + extras.keySet());
     }
-    MBLog.i(TAG, "  📤 Emitting 'onSearchQuery' event to JS with query=\"" + query + "\"");
+    event.putString("action", action);
+    MBLog.i(TAG, "  📤 Emitting 'onSearchQuery' event to JS with query=\"" + query + "\", action=\"" + action + "\"");
     reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
       .emit("onSearchQuery", event);
   }

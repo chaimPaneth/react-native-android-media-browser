@@ -21,6 +21,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaDescriptionCompat;
+import android.support.v4.media.session.MediaControllerCompat;
+import android.support.v4.media.session.MediaSessionCompat;
 
 import androidx.annotation.NonNull;
 import androidx.car.app.connection.CarConnection;
@@ -936,6 +938,39 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
     } catch (Exception e) {
       MBLog.e(TAG, "  ❌ setSearchResults failed: " + e.getMessage(), e);
       promise.reject("ERR_SET_SEARCH_RESULTS", e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Trigger native playback for a media item by its ID.
+   * Dispatches through MediaSession transport controls, reusing the same
+   * native flow as Android Auto browse-item taps (onPlayFromMediaId).
+   */
+  @ReactMethod
+  public void triggerPlayFromMediaId(String mediaId) {
+    MBLog.i(TAG, "\uD83D\uDD0D triggerPlayFromMediaId(mediaId=" + mediaId + ")");
+    try {
+      // Look up the stored MediaItem so we can forward its extras (post JSON etc.)
+      Bundle extras = new Bundle();
+      MediaBrowserCompat.MediaItem storedItem = MediaItemsStore.getInstance().getMediaItemById(mediaId);
+      if (storedItem != null && storedItem.getDescription().getExtras() != null) {
+        extras = storedItem.getDescription().getExtras();
+        MBLog.d(TAG, "\uD83D\uDD0D  \uD83D\uDCE6 Attached MediaItem extras for mediaId=" + mediaId);
+      } else {
+        MBLog.w(TAG, "\uD83D\uDD0D  ⚠️ No stored MediaItem/extras found for mediaId=" + mediaId);
+      }
+
+      MediaSessionCompat session = MediaSessionSingleton.getInstance(getReactApplicationContext());
+      if (session != null) {
+        MediaControllerCompat controller = new MediaControllerCompat(
+            getReactApplicationContext(), session.getSessionToken());
+        controller.getTransportControls().playFromMediaId(mediaId, extras);
+        MBLog.i(TAG, "\uD83D\uDD0D \u2192 dispatched playFromMediaId to MediaSession");
+      } else {
+        MBLog.w(TAG, "\uD83D\uDD0D \u2192 MediaSession is null!");
+      }
+    } catch (Exception e) {
+      MBLog.e(TAG, "\uD83D\uDD0D triggerPlayFromMediaId error: " + e.getMessage(), e);
     }
   }
 
