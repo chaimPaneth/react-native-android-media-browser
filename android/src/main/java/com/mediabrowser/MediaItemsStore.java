@@ -34,6 +34,11 @@ public class MediaItemsStore extends NotificationListenerService {
 
   private List<MediaBrowserCompat.MediaItem> searchResults = new ArrayList<>();
 
+  // Whether JS has registered a search handler. Default false so that
+  // Android Auto does NOT show the search button unless the vehicle lib
+  // explicitly opts in via setSearchSupported(true).
+  private volatile boolean searchSupported = false;
+
   private String rootId;
   
   // Indicates whether JS has populated the browse hierarchy at least once.
@@ -259,6 +264,15 @@ public class MediaItemsStore extends NotificationListenerService {
   public void clearSearchResults() {
     this.searchResults = new ArrayList<>();
     mediaItemsHierarchy.remove("SEARCH_RESULTS");
+  }
+
+  public void setSearchSupported(boolean supported) {
+    MBLog.i(TAG, "🔍 setSearchSupported(" + supported + ")");
+    this.searchSupported = supported;
+  }
+
+  public boolean isSearchSupported() {
+    return searchSupported;
   }
 
   public interface MediaItemsUpdateListener {

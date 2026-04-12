@@ -1139,7 +1139,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     String finalRootId = rootId != null ? rootId : MEDIA_ROOT_ID;
     MBLog.d(TAG, "  ✅ Returning rootId: " + finalRootId);
     Bundle searchExtras = new Bundle();
-    searchExtras.putBoolean(MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_SEARCH_SUPPORTED, true);
+    boolean searchEnabled = MediaItemsStore.getInstance().isSearchSupported();
+    searchExtras.putBoolean(MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_SEARCH_SUPPORTED, searchEnabled);
+    MBLog.d(TAG, "  🔍 Search supported: " + searchEnabled);
     return new BrowserRoot(finalRootId, searchExtras);
   }
 

@@ -919,6 +919,11 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   @ReactMethod
+  public void setSearchSupported(boolean supported) {
+    MediaItemsStore.getInstance().setSearchSupported(supported);
+  }
+
+  @ReactMethod
   public void setSearchResults(ReadableArray resultsArray, Promise promise) {
     MBLog.i(TAG, "🔍 setSearchResults: received " + (resultsArray != null ? resultsArray.size() : 0) + " items from JS");
     try {

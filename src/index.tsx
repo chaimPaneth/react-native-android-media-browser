@@ -115,6 +115,11 @@ const MediaBrowserWrapper = {
   updateMediaItems: (parentId: string, updatedItems: MediaItem[], replace: boolean) => {
     MediaBrowser?.updateMediaItems(parentId, updatedItems, replace);
   },
+  // Tell native whether the JS side has a search handler registered.
+  // When true, Android Auto shows the search button; when false (default), it's hidden.
+  setSearchSupported: (supported: boolean) => {
+    MediaBrowser?.setSearchSupported(supported);
+  },
   // Send search results back to the native MediaBrowserService.
   // Called from the search handler after processing a search query.
   setSearchResults: (items: MediaItem[]): Promise<void> => {
