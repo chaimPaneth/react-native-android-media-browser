@@ -762,6 +762,7 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
     MBLog.v(TAG, "→ playFromMediaId(mediaId=" + mediaId + ")");
     try {
       Bundle extras = null;
+      ReadableMap postInfo = null;
       
       // First try to get extras from provided postData
       if (postData != null) {
@@ -769,8 +770,6 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
         
         // Check if postData has the standard MediaItem structure with nested extras.info
         // or if it's the raw post object itself
-        ReadableMap postInfo = null;
-        
         if (postData.hasKey("extras")) {
           // Standard MediaItem structure: { id, title, extras: { info: {...} } }
           ReadableMap itemExtras = postData.getMap("extras");
@@ -829,6 +828,10 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
           }
         }
       }
+
+      if (extras != null && postData != null) {
+        upsertTransientPlaybackItem(mediaId, postData, extras, postInfo);
+      }
       
       // Fallback: try to get extras from MediaItemsStore if no postData provided
       if (extras == null) {
@@ -869,6 +872,92 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
       MBLog.e(TAG, "Error in playFromMediaId: " + e.getMessage());
       promise.reject("ERR_PLAY_FROM_MEDIA_ID", e.getMessage(), e);
     }
+  }
+
+  private void upsertTransientPlaybackItem(String mediaId, ReadableMap postData, Bundle extras, ReadableMap postInfo) {
+    try {
+      if (mediaId == null || mediaId.trim().isEmpty()) {
+        return;
+      }
+
+      Bundle itemExtras = extras != null ? new Bundle(extras) : new Bundle();
+      String title = firstNonEmptyString(
+        getReadableString(postData, "title"),
+        getReadableString(postInfo, "title"),
+        itemExtras.getString("title")
+      );
+      String subtitle = firstNonEmptyString(
+        getReadableString(postData, "subTitle"),
+        getReadableString(postData, "subtitle"),
+        getReadableString(postInfo, "subTitle"),
+        getReadableString(postInfo, "subtitle"),
+        itemExtras.getString("subtitle")
+      );
+      String icon = firstNonEmptyString(
+        getReadableString(postData, "icon"),
+        getReadableString(postData, "image"),
+        getReadableString(postData, "seriesImage"),
+        getReadableString(postInfo, "icon"),
+        getReadableString(postInfo, "image"),
+        getReadableString(postInfo, "seriesImage"),
+        itemExtras.getString("image")
+      );
+
+      MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
+        .setMediaId(mediaId)
+        .setExtras(itemExtras);
+
+      if (title != null) {
+        description.setTitle(title);
+      }
+      if (subtitle != null) {
+        description.setSubtitle(subtitle);
+      }
+      if (icon != null) {
+        try {
+          description.setIconUri(Uri.parse(icon));
+        } catch (Exception ignored) {}
+      }
+
+      boolean existed = MediaItemsStore.getInstance().getMediaItemById(mediaId) != null;
+      MediaBrowserCompat.MediaItem transientItem = new MediaBrowserCompat.MediaItem(
+        description.build(),
+        MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
+      );
+      MediaItemsStore.getInstance().upsertTransientMediaItem(transientItem);
+      MBLog.d(TAG, "LOG_CAN_BE_REMOVED_ON_RELEASE playFromMediaId-transient-upsert mediaId="
+        + mediaId
+        + ", title=" + title
+        + ", existed=" + existed
+        + ", hasInfo=" + itemExtras.containsKey("info"));
+    } catch (Exception e) {
+      MBLog.w(TAG, "LOG_CAN_BE_REMOVED_ON_RELEASE playFromMediaId-transient-upsert-failed mediaId="
+        + mediaId
+        + ", error=" + e.getMessage());
+    }
+  }
+
+  private String getReadableString(ReadableMap map, String key) {
+    if (map == null || key == null || !map.hasKey(key) || map.getType(key) != ReadableType.String) {
+      return null;
+    }
+
+    String value = map.getString(key);
+    return value != null && !value.trim().isEmpty() ? value : null;
+  }
+
+  private String firstNonEmptyString(String... values) {
+    if (values == null) {
+      return null;
+    }
+
+    for (String value : values) {
+      if (value != null && !value.trim().isEmpty()) {
+        return value;
+      }
+    }
+
+    return null;
   }
 
   /**

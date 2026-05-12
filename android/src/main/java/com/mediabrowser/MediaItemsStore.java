@@ -24,6 +24,7 @@ import java.util.Map;
 
 public class MediaItemsStore extends NotificationListenerService {
   private static final String TAG = "MediaItemsStore";
+  private static final String TRANSIENT_PLAYBACK_PARENT_ID = "__TRANSIENT_PLAYBACK__";
   private ReactApplicationContext reactContext;
 
   private static MediaItemsStore instance;
@@ -196,6 +197,43 @@ public class MediaItemsStore extends NotificationListenerService {
     if (listener != null && parentId != null) {
       listener.onMediaItemsUpdated(parentId);
     }
+  }
+
+  public synchronized void upsertTransientMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
+    if (updatedItem == null || updatedItem.getDescription() == null || updatedItem.getMediaId() == null) {
+      return;
+    }
+
+    String itemId = updatedItem.getMediaId();
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      if (TRANSIENT_PLAYBACK_PARENT_ID.equals(entry.getKey())) {
+        continue;
+      }
+      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
+      if (children == null) {
+        continue;
+      }
+      for (int index = 0; index < children.size(); index++) {
+        MediaBrowserCompat.MediaItem currentItem = children.get(index);
+        if (currentItem != null && itemId.equals(currentItem.getMediaId())) {
+          return;
+        }
+      }
+    }
+
+    List<MediaBrowserCompat.MediaItem> transientItems = mediaItemsHierarchy.get(TRANSIENT_PLAYBACK_PARENT_ID);
+    if (transientItems == null) {
+      transientItems = new ArrayList<>();
+      mediaItemsHierarchy.put(TRANSIENT_PLAYBACK_PARENT_ID, transientItems);
+    }
+    for (int index = 0; index < transientItems.size(); index++) {
+      MediaBrowserCompat.MediaItem currentItem = transientItems.get(index);
+      if (currentItem != null && itemId.equals(currentItem.getMediaId())) {
+        transientItems.set(index, updatedItem);
+        return;
+      }
+    }
+    transientItems.add(updatedItem);
   }
 
   public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {

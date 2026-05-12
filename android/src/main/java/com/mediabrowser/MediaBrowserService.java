@@ -1230,6 +1230,11 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           mediaItemMap.putString("title", title.toString());
         }
 
+        MBLog.d(TAG, "LOG_CAN_BE_REMOVED_ON_RELEASE foreground-dispatch-store-hit mediaId="
+          + mediaId
+          + ", title=" + (title != null ? title.toString() : "")
+          + ", hierarchyReady=" + store.isHierarchyReady());
+
         CharSequence subtitle = mediaItem.getDescription().getSubtitle();
         if (subtitle != null) {
           mediaItemMap.putString("subTitle", subtitle.toString());
@@ -1263,6 +1268,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         // Send to React Native
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("onMediaItemSelected", mediaItemMap);
+      } else {
+        MBLog.w(TAG, "LOG_CAN_BE_REMOVED_ON_RELEASE foreground-dispatch-missing mediaId="
+          + mediaId
+          + ", hasMediaItem=" + (mediaItem != null)
+          + ", hasReactContext=" + (reactContext != null)
+          + ", hierarchyReady=" + store.isHierarchyReady());
       }
     } catch (Exception e) {
       MBLog.e(TAG, "Error in static sendMediaItemToReactNative", e);
