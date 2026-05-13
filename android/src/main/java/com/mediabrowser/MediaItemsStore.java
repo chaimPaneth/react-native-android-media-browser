@@ -25,6 +25,7 @@ import java.util.Map;
 public class MediaItemsStore extends NotificationListenerService {
   private static final String TAG = "MediaItemsStore";
   private static final String TRANSIENT_PLAYBACK_PARENT_ID = "__TRANSIENT_PLAYBACK__";
+  private static final int TRANSIENT_PLAYBACK_MAX_SIZE = 64;
   private ReactApplicationContext reactContext;
 
   private static MediaItemsStore instance;
@@ -234,6 +235,10 @@ public class MediaItemsStore extends NotificationListenerService {
       }
     }
     transientItems.add(updatedItem);
+    // Prune oldest entries to keep the bucket bounded (FIFO eviction)
+    while (transientItems.size() > TRANSIENT_PLAYBACK_MAX_SIZE) {
+      transientItems.remove(0);
+    }
   }
 
   public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {

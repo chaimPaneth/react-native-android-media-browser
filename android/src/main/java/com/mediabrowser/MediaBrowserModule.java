@@ -996,4 +996,21 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
       promise.resolve(1.0);
     }
   }
+
+  /**
+   * Acknowledge that a skip event (identified by skipToken) was successfully handled by JS.
+   * This prevents the 300 ms native fallback in RNJWMediaSessionHelper from double-firing.
+   * Safe to call with an expired or unknown token — it is treated as a no-op.
+   */
+  @ReactMethod
+  public void acknowledgeSkip(String skipToken, Promise promise) {
+    MBLog.v(TAG, "→ acknowledgeSkip(skipToken=" + skipToken + ")");
+    try {
+      MediaBrowserService.acknowledgeSkip(skipToken);
+      promise.resolve(null);
+    } catch (Exception e) {
+      MBLog.w(NAME, "acknowledgeSkip failed: " + e.getMessage());
+      promise.resolve(null); // Non-fatal — never reject so JS callers don't need catch
+    }
+  }
 }

@@ -45,6 +45,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
@@ -56,6 +57,13 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
   // Static instance for cross-component access (e.g., from MediaBrowserModule)
   private static MediaBrowserService sInstance;
+
+  // Pending skip acknowledgements: skipToken → dispatch timestamp (ms).
+  // RNJWMediaSessionHelper stores the token after dispatching a skip event to RN;
+  // HeadlessTaskHandler calls acknowledgeSkip() after successfully handling it.
+  // A 300 ms fallback in RNJWMediaSessionHelper fires native skip if the token is not cleared.
+  private static final ConcurrentHashMap<String, Long> pendingSkipAcks = new ConcurrentHashMap<>();
+  private static final long SKIP_ACK_TIMEOUT_MS = 300;
 
   // Playback speed control state
   private float currentPlaybackSpeed = 1.0f;
@@ -1115,30 +1123,40 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * Public method to send skip to next event to React Native
    * Called by RNJWMediaSessionHelper when Next button pressed in Android Auto
    * @param mediaId The ID of the current media item
+   * @return The skip token that was included in the event payload (may be null on failure)
    */
-  public static void sendSkipToNextEventToReactNative(String mediaId) {
+  public static String sendSkipToNextEventToReactNative(String mediaId) {
     MBLog.v(TAG, "→ sendSkipToNextEventToReactNative(mediaId=" + mediaId + ")");
     try {
       MediaItemsStore store = MediaItemsStore.getInstance();
       ReactContext reactContext = store.getReactApplicationContext();
-      
+
       if (reactContext != null) {
+        String skipToken = generateSkipToken();
+        pendingSkipAcks.put(skipToken, System.currentTimeMillis());
+
         WritableMap event = Arguments.createMap();
         event.putString("type", "skip-to-next");
         event.putString("mediaId", mediaId);
+        event.putString("skipToken", skipToken);
         event.putLong("timestamp", System.currentTimeMillis());
-        
+
         try {
           reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit("onSkipToNext", event);
         } catch (Exception emitError) {
+          pendingSkipAcks.remove(skipToken);
           MBLog.e(TAG, "Error emitting skip-to-next event: " + emitError.getMessage(), emitError);
+          return null;
         }
+        return skipToken;
       } else {
         MBLog.w(TAG, "Cannot emit skip-to-next - no React context");
+        return null;
       }
     } catch (Exception e) {
       MBLog.e(TAG, "Error in sendSkipToNextEventToReactNative", e);
+      return null;
     }
   }
   
@@ -1146,33 +1164,70 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * Public method to send skip to previous event to React Native
    * Called by RNJWMediaSessionHelper when Previous button pressed in Android Auto
    * @param mediaId The ID of the current media item
+   * @return The skip token that was included in the event payload (may be null on failure)
    */
-  public static void sendSkipToPreviousEventToReactNative(String mediaId) {
+  public static String sendSkipToPreviousEventToReactNative(String mediaId) {
     MBLog.v(TAG, "→ sendSkipToPreviousEventToReactNative(mediaId=" + mediaId + ")");
     try {
       MediaItemsStore store = MediaItemsStore.getInstance();
       ReactContext reactContext = store.getReactApplicationContext();
-      
+
       if (reactContext != null) {
+        String skipToken = generateSkipToken();
+        pendingSkipAcks.put(skipToken, System.currentTimeMillis());
+
         WritableMap event = Arguments.createMap();
         event.putString("type", "skip-to-previous");
         event.putString("mediaId", mediaId);
+        event.putString("skipToken", skipToken);
         event.putLong("timestamp", System.currentTimeMillis());
-        
+
         try {
           reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit("onSkipToPrevious", event);
         } catch (Exception emitError) {
+          pendingSkipAcks.remove(skipToken);
           MBLog.e(TAG, "Error emitting skip-to-previous event: " + emitError.getMessage(), emitError);
+          return null;
         }
+        return skipToken;
       } else {
         MBLog.w(TAG, "Cannot emit skip-to-previous - no React context");
+        return null;
       }
     } catch (Exception e) {
       MBLog.e(TAG, "Error in sendSkipToPreviousEventToReactNative", e);
+      return null;
     }
   }
   
+  /**
+   * Generate a short, unique token for a skip event.
+   * Uses the lower 32 bits of a UUID to keep the payload small.
+   */
+  private static String generateSkipToken() {
+    return Long.toHexString(java.util.UUID.randomUUID().getLeastSignificantBits() & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Acknowledge that a skip event was successfully handled by React Native.
+   * Called by MediaBrowserModule.acknowledgeSkip() from the JS bridge.
+   * If the token is present it is removed; if absent the call is a no-op.
+   */
+  public static void acknowledgeSkip(String skipToken) {
+    if (skipToken != null) {
+      pendingSkipAcks.remove(skipToken);
+    }
+  }
+
+  /**
+   * Returns true if the given skipToken is still pending (i.e. RN has not acknowledged it).
+   * Used by RNJWMediaSessionHelper to decide whether to fire the native fallback.
+   */
+  public static boolean isSkipPending(String skipToken) {
+    return skipToken != null && pendingSkipAcks.containsKey(skipToken);
+  }
+
   /**
    * Public method to send playlist complete event to React Native
    * Called by RNJWMediaSessionHelper when onPlaylistComplete is triggered

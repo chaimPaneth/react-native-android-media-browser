@@ -148,6 +148,19 @@ const MediaBrowserWrapper = {
   },
 
   /**
+   * Acknowledge that a skip event (identified by skipToken) was handled by JS.
+   * Call this after successfully navigating to the skipped item so the native
+   * 300 ms fallback does not double-fire a JWPlayer-internal skip.
+   * Safe to call with a null / undefined token — treated as a no-op.
+   */
+  acknowledgeSkip: (skipToken: string | null | undefined): Promise<void> => {
+    if (!skipToken || !MediaBrowser?.acknowledgeSkip) {
+      return Promise.resolve();
+    }
+    return MediaBrowser.acknowledgeSkip(skipToken);
+  },
+
+  /**
    * Registers a listener for speed-change events that originate from the
    * Android Auto UI (e.g. the user tapping the speed custom action button).
    * Returns an EmitterSubscription that should be removed on cleanup.
