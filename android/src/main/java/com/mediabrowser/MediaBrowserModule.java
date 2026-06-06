@@ -923,6 +923,27 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
     MediaItemsStore.getInstance().setSearchSupported(supported);
   }
 
+  /**
+   * Called by the JS search handler once its listeners are registered. Tells
+   * the service to flush any search events that were queued before React was
+   * ready (cold-start voice search). Phase 3.3.
+   */
+  @ReactMethod
+  public void notifySearchHandlerReady() {
+    MBLog.v(TAG, "→ notifySearchHandlerReady()");
+    try {
+      // Flush directly if the service instance is live...
+      MediaBrowserService.flushPendingSearchEventsStatic();
+      // ...and also signal via intent in case the service handles it elsewhere
+      // or needs to be (re)started to process the queue.
+      Intent intent = new Intent(getReactApplicationContext(), MediaBrowserService.class);
+      intent.setAction(MediaBrowserService.ACTION_FLUSH_SEARCH);
+      getReactApplicationContext().startService(intent);
+    } catch (Throwable t) {
+      MBLog.e(TAG, "Failed to notify search handler ready", t);
+    }
+  }
+
   @ReactMethod
   public void setSearchResults(ReadableArray resultsArray, Promise promise) {
     MBLog.i(TAG, "🔍 setSearchResults: received " + (resultsArray != null ? resultsArray.size() : 0) + " items from JS");

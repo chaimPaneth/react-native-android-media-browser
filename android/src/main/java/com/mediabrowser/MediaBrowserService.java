@@ -82,6 +82,31 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private Runnable searchTimeoutRunnable;
   private String lastSearchQuery = "";
 
+  // ── Cold-start search event queue (Phase 3.3) ───────────────────────────────
+  // When Android Auto fires a voice/text search before the React instance is
+  // ready, sendSearchQueryToJS() has nowhere to emit. Rather than drop the
+  // event (the previous behaviour), we queue it here and flush once JS signals
+  // readiness via notifySearchHandlerReady() (ACTION_FLUSH_SEARCH).
+  public static final String ACTION_FLUSH_SEARCH = "com.mediabrowser.ACTION_FLUSH_SEARCH";
+  private static final int MAX_PENDING_SEARCH = 5;
+  private static final long PENDING_SEARCH_TTL_MS = 60_000; // 1 minute
+
+  private static class PendingSearchEvent {
+    final String query;
+    final Bundle extras;
+    final String action; // "search" | "play" | "prepare"
+    final long createdAtMs;
+    PendingSearchEvent(String query, Bundle extras, String action) {
+      this.query = query;
+      this.extras = extras;
+      this.action = action;
+      this.createdAtMs = System.currentTimeMillis();
+    }
+  }
+
+  private final List<PendingSearchEvent> pendingSearchEvents =
+    java.util.Collections.synchronizedList(new ArrayList<PendingSearchEvent>());
+
   @Override
   public void onCreate() {
     super.onCreate();
@@ -99,6 +124,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
 
     MediaItemsStore.getInstance().setListener(this);
+
+    // Phase 3.1: Read static search-capability hint from the app manifest so
+    // onGetRoot() can advertise SEARCH_SUPPORTED on the very first (cold-start)
+    // connect, before JS runs setSearchSupported(true). The runtime call
+    // remains as an override.
+    applySearchSupportedFromManifest();
 
     mSession = MediaSessionSingleton.getInstance(this);
     
@@ -221,12 +252,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 if (mSession != null) {
                     mSession.setPlaybackState(new PlaybackStateCompat.Builder()
                         .setState(PlaybackStateCompat.STATE_STOPPED, 0, currentPlaybackSpeed)
-                        .setActions(PlaybackStateCompat.ACTION_PLAY |
-                                   PlaybackStateCompat.ACTION_PAUSE |
-                                   PlaybackStateCompat.ACTION_STOP |
-                                   PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                                   PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                                   PlaybackStateCompat.ACTION_SEEK_TO)
+                        .setActions(buildBasePlaybackActions())
                         .addCustomAction(buildSpeedCustomAction())
                         .build());
                 }
@@ -267,6 +293,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         public void onPlayFromSearch(String query, Bundle extras) {
             MBLog.i(TAG, "🔍 onPlayFromSearch(query=\"" + query + "\", extras=" + (extras != null ? extras.toString() : "null") + ")");
             super.onPlayFromSearch(query, extras);
+            // Immediately advertise a CONNECTING state so Google Assistant doesn't
+            // time out (~5-8s, undocumented) while we run the network search. The
+            // base actions keep ACTION_PLAY_FROM_SEARCH present (Phase 3.2).
+            setConnectingStateForSearch();
             sendSearchQueryToJS(query, extras, "play");
         }
 
@@ -696,6 +726,28 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     return R.drawable.ic_speed_fastest;
   }
 
+  /**
+   * Base transport/search action bitmask used by EVERY setPlaybackState() write
+   * so that voice-search capability (ACTION_PLAY_FROM_SEARCH /
+   * ACTION_PREPARE_FROM_SEARCH) is never dropped after a state transition
+   * (play / pause / stop / speed change). Google Assistant routes
+   * "play X on <app>" through onPlayFromSearch() only when the MediaSession
+   * advertises these actions at the moment the user speaks (Phase 3.4).
+   */
+  static long buildBasePlaybackActions() {
+    return PlaybackStateCompat.ACTION_PLAY
+        | PlaybackStateCompat.ACTION_PAUSE
+        | PlaybackStateCompat.ACTION_PLAY_PAUSE
+        | PlaybackStateCompat.ACTION_STOP
+        | PlaybackStateCompat.ACTION_SEEK_TO
+        | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+        | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+        | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
+        | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH
+        | PlaybackStateCompat.ACTION_PREPARE
+        | PlaybackStateCompat.ACTION_PREPARE_FROM_SEARCH;
+  }
+
   /** Builds a PlaybackStateCompat.CustomAction for the speed button. */
   private PlaybackStateCompat.CustomAction buildSpeedCustomAction() {
     MBLog.v(TAG, "→ buildSpeedCustomAction()");
@@ -726,6 +778,39 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     }
   }
 
+  /**
+   * Reads the static search-capability flag from the app manifest:
+   *   <meta-data android:name="com.mediabrowser.SEARCH_SUPPORTED"
+   *              android:value="true" />
+   * Set during onCreate so the FIRST onGetRoot() (which Android Auto caches)
+   * already advertises search. Only flips the store to true; never forces false
+   * so a JS runtime override can still enable it on apps without the meta-data.
+   */
+  private void applySearchSupportedFromManifest() {
+    try {
+      android.content.pm.ApplicationInfo ai = getPackageManager()
+        .getApplicationInfo(getPackageName(), android.content.pm.PackageManager.GET_META_DATA);
+      Bundle meta = ai.metaData;
+      if (meta != null && meta.getBoolean("com.mediabrowser.SEARCH_SUPPORTED", false)) {
+        MBLog.i(TAG, "🔍 Manifest declares SEARCH_SUPPORTED=true – enabling search at startup");
+        MediaItemsStore.getInstance().setSearchSupported(true);
+      }
+    } catch (Exception e) {
+      MBLog.w(TAG, "Failed to read SEARCH_SUPPORTED manifest metadata: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Static entry point for JS to flush queued cold-start search events.
+   * Called from MediaBrowserModule.notifySearchHandlerReady(). No-op if the
+   * service isn't running yet (events stay queued until it is).
+   */
+  public static void flushPendingSearchEventsStatic() {
+    if (sInstance != null) {
+      sInstance.flushPendingSearchEvents();
+    }
+  }
+
   /** Updates the current PlaybackState to reflect the new speed (including new custom action label/icon). */
   private void updatePlaybackStateSpeed() {
     MBLog.v(TAG, "→ updatePlaybackStateSpeed()");
@@ -734,10 +819,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       PlaybackStateCompat current = mSession.getController().getPlaybackState();
       int state = (current != null) ? current.getState() : PlaybackStateCompat.STATE_NONE;
       long position = (current != null) ? current.getPosition() : 0;
-      long actions = (current != null) ? current.getActions() :
-          (PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE |
-           PlaybackStateCompat.ACTION_STOP | PlaybackStateCompat.ACTION_SEEK_TO |
-           PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+      // Always OR in the base actions so a speed change never drops
+      // ACTION_PLAY_FROM_SEARCH (Phase 3.4).
+      long actions = ((current != null) ? current.getActions() : 0L)
+          | buildBasePlaybackActions();
       mSession.setPlaybackState(new PlaybackStateCompat.Builder()
           .setState(state, position, currentPlaybackSpeed)
           .setActions(actions)
@@ -1518,12 +1603,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         // Update playback state to playing
         mSession.setPlaybackState(new PlaybackStateCompat.Builder()
           .setState(PlaybackStateCompat.STATE_PLAYING, 0, currentPlaybackSpeed)
-          .setActions(PlaybackStateCompat.ACTION_PLAY |
-                     PlaybackStateCompat.ACTION_PAUSE |
-                     PlaybackStateCompat.ACTION_STOP |
-                     PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                     PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                     PlaybackStateCompat.ACTION_SEEK_TO)
+          .setActions(buildBasePlaybackActions())
           .addCustomAction(buildSpeedCustomAction())
           .build());
 
@@ -1619,6 +1699,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         return super.onStartCommand(intent, flags, startId);
       }
 
+      // 1b) JS search-handler ready → flush any queued cold-start search events
+      if (ACTION_FLUSH_SEARCH.equals(action)) {
+        flushPendingSearchEvents();
+        return super.onStartCommand(intent, flags, startId);
+      }
+
       // 2) Legacy notification actions (your old behavior)
       if ("media_action_pause".equals(action)) {
         if (mSession != null && mSession.getController() != null) {
@@ -1654,12 +1740,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         if (mSession != null) {
           mSession.setPlaybackState(new PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_STOPPED, 0, 1.0f)
-            .setActions(PlaybackStateCompat.ACTION_PLAY |
-                        PlaybackStateCompat.ACTION_PAUSE |
-                        PlaybackStateCompat.ACTION_STOP |
-                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
-                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
-                        PlaybackStateCompat.ACTION_SEEK_TO)
+            .setActions(buildBasePlaybackActions())
             .build());
         }
         
@@ -1686,19 +1767,25 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
   private void sendSearchQueryToJS(String query, Bundle extras, String action) {
     MBLog.i(TAG, "🔍 sendSearchQueryToJS(query=\"" + query + "\", action=\"" + action + "\")");
-    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
-    if (reactContext == null) {
-      MBLog.w(TAG, "  ❌ sendSearchQueryToJS: reactContext is NULL");
-      return;
-    }
-    if (!reactContext.hasActiveReactInstance()) {
-      MBLog.w(TAG, "  ❌ sendSearchQueryToJS: React instance NOT active");
-      return;
-    }
     if (query == null || query.isEmpty()) {
       MBLog.d(TAG, "  ↩ sendSearchQueryToJS: query is null/empty – skipping");
       return;
     }
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    boolean reactReady = reactContext != null && reactContext.hasActiveReactInstance();
+    if (!reactReady) {
+      // Phase 3.3: React isn't up yet (cold-start voice search). Queue the
+      // event instead of dropping it; it will be flushed by
+      // flushPendingSearchEvents() once JS calls notifySearchHandlerReady().
+      MBLog.w(TAG, "  ⏳ React not ready – queuing search event: \"" + query + "\" (action=" + action + ")");
+      queueSearchEvent(query, extras, action);
+      return;
+    }
+    emitSearchQueryToJS(reactContext, query, extras, action);
+  }
+
+  /** Emit the onSearchQuery event to JS. Assumes React context is active. */
+  private void emitSearchQueryToJS(ReactContext reactContext, String query, Bundle extras, String action) {
     WritableMap event = Arguments.createMap();
     event.putString("query", query);
     if (extras != null) {
@@ -1716,6 +1803,72 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     MBLog.i(TAG, "  📤 Emitting 'onSearchQuery' event to JS with query=\"" + query + "\", action=\"" + action + "\"");
     reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
       .emit("onSearchQuery", event);
+  }
+
+  /** Queue a search event (bounded + TTL) for delivery once React is ready. */
+  private void queueSearchEvent(String query, Bundle extras, String action) {
+    synchronized (pendingSearchEvents) {
+      // Drop the oldest if we're at capacity.
+      while (pendingSearchEvents.size() >= MAX_PENDING_SEARCH) {
+        pendingSearchEvents.remove(0);
+        MBLog.d(TAG, "  🗑️ Pending search queue full – dropped oldest event");
+      }
+      pendingSearchEvents.add(new PendingSearchEvent(query, extras, action));
+      MBLog.d(TAG, "  📥 Queued search event. Pending=" + pendingSearchEvents.size());
+    }
+  }
+
+  /**
+   * Flush queued cold-start search events to JS. Called when JS signals it has
+   * registered its search handler (ACTION_FLUSH_SEARCH via
+   * MediaBrowserModule.notifySearchHandlerReady()). Drops events older than the
+   * TTL so a stale voice command doesn't auto-play minutes later (Phase 3.3).
+   */
+  public void flushPendingSearchEvents() {
+    ReactContext reactContext = MediaItemsStore.getInstance().getReactApplicationContext();
+    if (reactContext == null || !reactContext.hasActiveReactInstance()) {
+      MBLog.w(TAG, "🔍 flushPendingSearchEvents: React still not ready – keeping queue");
+      return;
+    }
+    final long now = System.currentTimeMillis();
+    synchronized (pendingSearchEvents) {
+      if (pendingSearchEvents.isEmpty()) {
+        MBLog.d(TAG, "🔍 flushPendingSearchEvents: nothing queued");
+        return;
+      }
+      MBLog.i(TAG, "🔍 flushPendingSearchEvents: flushing " + pendingSearchEvents.size() + " event(s)");
+      Iterator<PendingSearchEvent> it = pendingSearchEvents.iterator();
+      while (it.hasNext()) {
+        PendingSearchEvent ev = it.next();
+        it.remove();
+        if (now - ev.createdAtMs > PENDING_SEARCH_TTL_MS) {
+          MBLog.d(TAG, "  ⌛ Dropping expired search event: \"" + ev.query + "\"");
+          continue;
+        }
+        emitSearchQueryToJS(reactContext, ev.query, ev.extras, ev.action);
+      }
+    }
+  }
+
+  /**
+   * Set a transient CONNECTING/BUFFERING state with full base actions so
+   * Google Assistant sees progress immediately after a voice search and does
+   * not time out before results arrive (Phase 3.2).
+   */
+  private void setConnectingStateForSearch() {
+    if (mSession == null) return;
+    try {
+      if (!mSession.isActive()) {
+        mSession.setActive(true);
+      }
+      mSession.setPlaybackState(new PlaybackStateCompat.Builder()
+        .setState(PlaybackStateCompat.STATE_CONNECTING, 0, 1.0f)
+        .setActions(buildBasePlaybackActions())
+        .build());
+      MBLog.d(TAG, "  ⏩ Set STATE_CONNECTING for voice search");
+    } catch (Exception e) {
+      MBLog.w(TAG, "  ⚠️ setConnectingStateForSearch failed: " + e.getMessage());
+    }
   }
 
   /**
