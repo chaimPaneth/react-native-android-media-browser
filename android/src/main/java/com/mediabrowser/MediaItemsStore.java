@@ -144,9 +144,7 @@ public class MediaItemsStore extends NotificationListenerService {
     if (children != null) {
       children.add(newItem);
     }
-    if (listener != null) {
-      listener.onMediaItemsUpdated(parentId);
-    }
+    notifyIfChanged(parentId);
   }
 
   public void deleteMediaItem(String itemId) {
@@ -172,9 +170,7 @@ public class MediaItemsStore extends NotificationListenerService {
         }
       }
     }
-    if (listener != null && parentId != null) {
-      listener.onMediaItemsUpdated(parentId);
-    }
+    notifyIfChanged(parentId);
   }
 
   public void updateMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
@@ -195,9 +191,7 @@ public class MediaItemsStore extends NotificationListenerService {
         break;
       }
     }
-    if (listener != null && parentId != null) {
-      listener.onMediaItemsUpdated(parentId);
-    }
+    notifyIfChanged(parentId);
   }
 
   public synchronized void upsertTransientMediaItem(MediaBrowserCompat.MediaItem updatedItem) {
@@ -244,6 +238,39 @@ public class MediaItemsStore extends NotificationListenerService {
   public void updateMediaItems(String parentId, List<MediaBrowserCompat.MediaItem> updatedItems, boolean replace) {
     // MBLog.v(TAG, "→ updateMediaItems(parentId=" + parentId + ", count=" + updatedItems.size() + ", replace=" + replace + ")");
     if (replace) {
+      // Carry over already-decoded artwork from the current items so a re-publish
+      // with the same content doesn't momentarily drop images. Without this, a
+      // freshly built (art-less) item would change the parent's signature and
+      // trigger a spurious reload, then reload again once the art re-attaches.
+      List<MediaBrowserCompat.MediaItem> existing = mediaItemsHierarchy.get(parentId);
+      if (existing != null && !existing.isEmpty()) {
+        Map<String, android.graphics.Bitmap> artById = new HashMap<>();
+        for (MediaBrowserCompat.MediaItem ex : existing) {
+          if (ex != null && ex.getDescription() != null && ex.getDescription().getIconBitmap() != null) {
+            artById.put(ex.getMediaId(), ex.getDescription().getIconBitmap());
+          }
+        }
+        if (!artById.isEmpty()) {
+          for (int i = 0; i < updatedItems.size(); i++) {
+            MediaBrowserCompat.MediaItem ni = updatedItems.get(i);
+            if (ni == null || ni.getDescription() == null) continue;
+            if (ni.getDescription().getIconBitmap() != null) continue;
+            android.graphics.Bitmap art = artById.get(ni.getMediaId());
+            if (art != null) {
+              MediaDescriptionCompat d = ni.getDescription();
+              MediaDescriptionCompat.Builder b = new MediaDescriptionCompat.Builder()
+                .setMediaId(d.getMediaId())
+                .setTitle(d.getTitle())
+                .setSubtitle(d.getSubtitle())
+                .setDescription(d.getDescription())
+                .setIconUri(d.getIconUri())
+                .setExtras(d.getExtras())
+                .setIconBitmap(art);
+              updatedItems.set(i, new MediaBrowserCompat.MediaItem(b.build(), ni.getFlags()));
+            }
+          }
+        }
+      }
       // Replace all existing items with the new list
       mediaItemsHierarchy.put(parentId, updatedItems);
     } else {
@@ -269,9 +296,7 @@ public class MediaItemsStore extends NotificationListenerService {
       // Add any new items that were not in the original list
       children.addAll(updatedItemsMap.values());
     }
-    if (listener != null) {
-      listener.onMediaItemsUpdated(parentId);
-    }
+    notifyIfChanged(parentId);
   }
 
   public interface MediaItemsUpdateListener {
@@ -279,6 +304,93 @@ public class MediaItemsStore extends NotificationListenerService {
   }
 
   private MediaItemsUpdateListener listener;
+
+  // Tracks the last signature we notified per parent. Android Auto reloads a list
+  // (and scrolls it back to the top) every time it receives notifyChildrenChanged
+  // for the node being viewed. We were firing that on every re-publish and on every
+  // now-playing progress tick, which made the list jump repeatedly. We now only
+  // notify when a parent's structural content actually changed.
+  private final Map<String, String> lastNotifiedSignature = new HashMap<>();
+
+  /**
+   * Stable signature of a parent's children, used for change detection.
+   * Includes identity/structure (flags, mediaId, title, subtitle) and whether
+   * artwork is attached — so artwork that loads in late triggers exactly ONE
+   * refresh. It deliberately EXCLUDES playback progress (completion percentage /
+   * status), so frequent now-playing progress updates never reload the browse list.
+   */
+  private String signatureOf(List<MediaBrowserCompat.MediaItem> items) {
+    if (items == null) return "\u2205";
+    StringBuilder sb = new StringBuilder(items.size() * 32);
+    for (MediaBrowserCompat.MediaItem item : items) {
+      if (item == null) { sb.append("\u00b7|"); continue; }
+      MediaDescriptionCompat d = item.getDescription();
+      sb.append(item.getFlags()).append(':')
+        .append(item.getMediaId()).append(':')
+        .append(d != null && d.getTitle() != null ? d.getTitle() : "").append(':')
+        .append(d != null && d.getSubtitle() != null ? d.getSubtitle() : "").append(':')
+        .append(d != null && d.getIconBitmap() != null ? "b" : "-")
+        .append('|');
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Notify the listener for a parent ONLY if its children changed since the last
+   * notification. Prevents Android Auto from reloading (and jumping to the top of)
+   * a list when nothing visible changed — e.g. redundant re-publishes or progress
+   * ticks. Returns true if a notification was sent.
+   */
+  private boolean notifyIfChanged(String parentId) {
+    if (listener == null || parentId == null) return false;
+    String sig = signatureOf(mediaItemsHierarchy.get(parentId));
+    if (sig.equals(lastNotifiedSignature.get(parentId))) {
+      return false; // unchanged — don't make AA reload
+    }
+    lastNotifiedSignature.put(parentId, sig);
+    listener.onMediaItemsUpdated(parentId);
+    return true;
+  }
+
+  /**
+   * Replace an item's artwork bitmap in place. Used by the async artwork loader
+   * so the bridge thread never blocks on image decoding. Returns the parentId of
+   * the updated item (for a follow-up notifyChildrenChanged), or null if not found.
+   * Does NOT notify — callers coalesce notifications per parent.
+   */
+  public synchronized String updateItemBitmapById(String itemId, android.graphics.Bitmap bmp) {
+    if (itemId == null || bmp == null || mediaItemsHierarchy == null) return null;
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : mediaItemsHierarchy.entrySet()) {
+      List<MediaBrowserCompat.MediaItem> children = entry.getValue();
+      if (children == null) continue;
+      for (int i = 0; i < children.size(); i++) {
+        MediaBrowserCompat.MediaItem current = children.get(i);
+        if (current != null && itemId.equals(current.getMediaId())) {
+          MediaDescriptionCompat d = current.getDescription();
+          MediaDescriptionCompat.Builder b = new MediaDescriptionCompat.Builder()
+            .setMediaId(d.getMediaId())
+            .setTitle(d.getTitle())
+            .setSubtitle(d.getSubtitle())
+            .setDescription(d.getDescription())
+            .setIconUri(d.getIconUri())
+            .setExtras(d.getExtras())
+            .setIconBitmap(bmp);
+          MediaBrowserCompat.MediaItem updated =
+            new MediaBrowserCompat.MediaItem(b.build(), current.getFlags());
+          children.set(i, updated);
+          return entry.getKey();
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Trigger a children-changed notification for a parent (used by async artwork loading).
+   *  Gated so it only fires when content actually changed (e.g. artwork attached),
+   *  not on redundant calls. */
+  public void notifyParentChanged(String parentId) {
+    notifyIfChanged(parentId);
+  }
 
   public void setListener(MediaItemsUpdateListener listener) {
     this.listener = listener;

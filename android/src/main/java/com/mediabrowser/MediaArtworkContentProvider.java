@@ -4,30 +4,14 @@ import android.content.ContentProvider;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.UriMatcher;
 import android.database.Cursor;
-import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
-import android.support.v4.media.MediaDescriptionCompat;
-
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
 import com.bumptech.glide.Glide;
-import com.bumptech.glide.load.resource.bitmap.CenterCrop;
-import com.facebook.common.references.CloseableReference;
-import com.facebook.datasource.DataSource;
-import com.facebook.datasource.DataSources;
-import com.facebook.drawee.backends.pipeline.Fresco;
-import com.facebook.imagepipeline.image.CloseableBitmap;
-import com.facebook.imagepipeline.image.CloseableImage;
-import com.facebook.imagepipeline.request.ImageRequest;
-import com.facebook.imagepipeline.request.ImageRequestBuilder;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -38,22 +22,23 @@ public class MediaArtworkContentProvider extends ContentProvider {
 
   private static final Map<Uri, Uri> uriMap = new HashMap<>();
 
-  public static String getAuthority(Context context) { 
-    try { 
-      int resId = context.getResources() 
-                          .getIdentifier("media_browser_authority", "string", context.getPackageName()); 
-      if (resId != 0) return context.getString(resId); 
-    } catch (Exception ignored) {} // Safe default derived from appId to avoid collisions 
-    
-    return context.getPackageName() + ".mediabrowser.provider"; 
+  /**
+   * Provider authority for the current app. MUST match the authority declared in
+   * this library's AndroidManifest.xml:
+   *   android:authorities="${applicationId}.mediabrowser.provider"
+   * getPackageName() returns the app's applicationId at runtime, so the two always
+   * agree and the authority is unique per app.
+   */
+  public static String getAuthority(Context context) {
+    return context.getPackageName() + ".mediabrowser.provider";
   }
 
-  public static android.net.Uri asAlbumArtContentURI(android.content.Context context, android.net.Uri webUri) { 
-    return new android.net.Uri.Builder() 
-      .scheme(android.content.ContentResolver.SCHEME_CONTENT) 
-      .authority(getAuthority(context)) 
-      .appendQueryParameter("url", webUri.toString()) 
-      .build(); 
+  public static android.net.Uri asAlbumArtContentURI(android.content.Context context, android.net.Uri webUri) {
+    return new android.net.Uri.Builder()
+      .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+      .authority(getAuthority(context))
+      .appendQueryParameter("url", webUri.toString())
+      .build();
   }
 
   public static Uri mapUri(Uri uri) {
@@ -74,48 +59,51 @@ public class MediaArtworkContentProvider extends ContentProvider {
 
   @Override
   public boolean onCreate() {
-    // Try to get the authority from string resources or use default
-    try {
-      Context context = getContext();
-      if (context != null) {
-        int resId = context.getResources().getIdentifier("media_browser_authority", "string", context.getPackageName());
-        if (resId != 0) {
-          CONTENT_PROVIDER_AUTHORITY = context.getString(resId);
-        }
-      }
-    } catch (Exception e) {
-      // Use default authority if configuration fails
+    // Match the authority declared in the manifest (${applicationId}.mediabrowser.provider).
+    Context context = getContext();
+    if (context != null) {
+      CONTENT_PROVIDER_AUTHORITY = context.getPackageName() + ".mediabrowser.provider";
     }
     return true;
   }
 
   @Override
   public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-    if (getContext() == null) return null;
-    Uri remoteUri = uriMap.get(uri);
-    if (remoteUri == null) throw new FileNotFoundException(uri.getPath());
+    Context context = getContext();
+    if (context == null) throw new FileNotFoundException("no context");
 
-    File file = new File(getContext().getCacheDir(), uri.getPath());
-    if (!file.exists()) {
-      // Use Glide to download the album art.
-      File cacheFile = null;
-      try {
-        cacheFile = Glide.with(getContext())
-          .asFile()
-          .load(remoteUri)
-          .submit()
-          .get(DOWNLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-      } catch (Exception e) {
-        e.printStackTrace();
-      }
+    // Resolve the remote source URL. Prefer the ?url= param produced by
+    // asAlbumArtContentURI(); fall back to the legacy mapUri() table.
+    String urlParam = uri.getQueryParameter("url");
+    Uri remoteUri = urlParam != null ? Uri.parse(urlParam) : uriMap.get(uri);
+    if (remoteUri == null) throw new FileNotFoundException(uri.toString());
 
-      // Rename the file Glide created to match our own scheme.
-      if (cacheFile != null) {
-        cacheFile.renameTo(file);
-        file = cacheFile;
-      }
+    // Security: the provider is exported so Android Auto can read item art. Only
+    // allow remote http/https sources — never file://, content://, android.resource,
+    // etc. — so another app cannot use this provider to read the app's private files.
+    String remoteScheme = remoteUri.getScheme();
+    if (!("http".equalsIgnoreCase(remoteScheme) || "https".equalsIgnoreCase(remoteScheme))) {
+      throw new FileNotFoundException("Unsupported art scheme: " + remoteScheme);
     }
-    return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+
+    // Let Glide download, cache, and de-duplicate concurrent requests, then serve
+    // its cached file directly (read-only). We do NOT rename/move Glide's file:
+    // renaming broke Glide's own cache and raced between Android Auto's concurrent
+    // requests (it opens art from several binder threads at once), which left some
+    // items — especially the first ones rendered — without artwork.
+    try {
+      File cacheFile = Glide.with(context.getApplicationContext())
+        .asFile()
+        .load(remoteUri)
+        .submit()
+        .get(DOWNLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      if (cacheFile != null && cacheFile.exists() && cacheFile.length() > 0) {
+        return ParcelFileDescriptor.open(cacheFile, ParcelFileDescriptor.MODE_READ_ONLY);
+      }
+    } catch (Throwable t) {
+      throw new FileNotFoundException("art load failed: " + remoteUri);
+    }
+    throw new FileNotFoundException(uri.toString());
   }
 
   @Override
@@ -143,69 +131,5 @@ public class MediaArtworkContentProvider extends ContentProvider {
   @Override
   public String getType(Uri uri) {
     return null;
-  }
-
-  public static void setIconBitmapFromFresco(
-    Context context,
-    MediaDescriptionCompat.Builder descriptionBuilder,
-    Uri uri) {
-    // 1. Build an ImageRequest
-    ImageRequest imageRequest = ImageRequestBuilder
-      .newBuilderWithSource(uri)
-      .build();
-
-    // 2. Fetch decoded image using Fresco
-    DataSource<CloseableReference<CloseableImage>> dataSource =
-      Fresco.getImagePipeline().fetchDecodedImage(imageRequest, context);
-
-    try {
-      // 3. Block until the final result is ready
-      CloseableReference<CloseableImage> resultRef = DataSources.waitForFinalResult(dataSource);
-
-      if (resultRef != null && resultRef.get() instanceof CloseableBitmap) {
-        // 4. Extract Bitmap from Fresco's CloseableBitmap and scale
-//        Bitmap bitmap = ((CloseableBitmap) resultRef.get()).getUnderlyingBitmap();
-//        Bitmap cropped = centerCrop(bitmap, desiredSize);
-//        Bitmap scaled = Bitmap.createScaledBitmap(cropped, desiredSize, desiredSize, true);
-
-        Bitmap bmp = Glide.with(context)
-          .asBitmap()
-          .load(uri)
-          .transform(new CenterCrop())  // or FitCenter, CircleCrop, etc.
-          .submit()
-          .get(DOWNLOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-
-        // 5. Set the icon bitmap on your MediaDescriptionCompat
-        descriptionBuilder.setIconBitmap(bmp);
-      }
-    } catch (Throwable e) {
-      e.printStackTrace();
-    } finally {
-      // 7. Always close the data source
-      dataSource.close();
-    }
-  }
-
-  private static Bitmap centerCrop(Bitmap src, int targetSize) {
-    // We'll make it square: targetSize x targetSize
-    float srcWidth = src.getWidth();
-    float srcHeight = src.getHeight();
-
-    float srcAspect = srcWidth / srcHeight;
-    float dstAspect = 1.0f; // square
-
-    if (srcAspect > dstAspect) {
-      // Source is wider than tall => crop left/right
-      int newWidth = (int) (srcHeight * dstAspect);
-      int offsetX = (int) ((srcWidth - newWidth) / 2);
-      return Bitmap.createBitmap(src, offsetX, 0, newWidth, (int) srcHeight);
-    } else if (srcAspect < dstAspect) {
-      // Source is taller than wide => crop top/bottom
-      int newHeight = (int) (srcWidth / dstAspect);
-      int offsetY = (int) ((srcHeight - newHeight) / 2);
-      return Bitmap.createBitmap(src, 0, offsetY, (int) srcWidth, newHeight);
-    }
-    // Already square
-    return src;
   }
 }

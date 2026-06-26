@@ -6,7 +6,6 @@ import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLET
 import static androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_STATUS;
 import static androidx.media.utils.MediaConstants.METADATA_KEY_IS_EXPLICIT;
 
-import static com.mediabrowser.MediaArtworkContentProvider.setIconBitmapFromFresco;
 import static com.mediabrowser.MediaBrowserUtils.convertReadableMapToJson;
 
 import android.app.Activity;
@@ -51,9 +50,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.resource.bitmap.CenterCrop;
@@ -92,6 +95,137 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private static final String TAG = "MediaBrowserModule";
+
+  // ── Off-bridge artwork loading ────────────────────────────────────────────────
+  // The original code loaded each remote icon SYNCHRONOUSLY on the bridge thread,
+  // blocking it for ~9s (207 images × cold network fetch) and freezing the app.
+  // The fix: load the same images on a background thread pool instead. Same images,
+  // same embedded bitmaps Android Auto already knows how to display — just not on
+  // the bridge.
+  // - 2 threads: enough parallelism without flooding Glide or starving the app's
+  //   own image loading (expo-image also uses Glide).
+  // - LOW priority: the app's own UI images always win.
+  // - Warm Glide cache: on relaunch every image resolves from disk in <1ms.
+  private static final int AA_ARTWORK_PX = 320;
+  private static final ExecutorService ARTWORK_EXECUTOR = Executors.newFixedThreadPool(2);
+  // Decoded artwork cache, keyed by mediaId. The async loader fills this; every
+  // item build (createMediaItem) and update (updateMediaItem) re-attaches from it.
+  // This decouples the bitmap from the item's lifecycle, so frequent now-playing
+  // progress updates can never wipe the art — no matter the load/update ordering.
+  // Bounded (LRU, ~32MB) so it can't grow unbounded as daily content changes;
+  // evicted entries simply reload on next browse.
+  private static final android.util.LruCache<String, Bitmap> ARTWORK_CACHE =
+    new android.util.LruCache<String, Bitmap>(32 * 1024 * 1024) {
+      @Override protected int sizeOf(String key, Bitmap value) {
+        return value != null ? value.getByteCount() : 0;
+      }
+    };
+
+  /**
+   * Synchronously load all remote-artwork bitmaps into the hierarchy items.
+   * Called on a background thread (not the bridge). After this returns, every
+   * item that had a remote icon URL has its bitmap embedded — so when the
+   * hierarchy is stored, AA sees items with art from the very first render.
+   * No timers, no re-fetching, no scroll disruption.
+   */
+  private void loadBitmapsIntoHierarchy(Context context,
+                                        Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy) {
+    if (context == null || hierarchy == null) return;
+    Context app = context.getApplicationContext();
+    for (Map.Entry<String, List<MediaBrowserCompat.MediaItem>> entry : hierarchy.entrySet()) {
+      List<MediaBrowserCompat.MediaItem> items = entry.getValue();
+      if (items == null) continue;
+      for (int i = 0; i < items.size(); i++) {
+        MediaBrowserCompat.MediaItem item = items.get(i);
+        if (item == null || item.getDescription() == null) continue;
+        if (item.getDescription().getIconBitmap() != null) continue;
+        Uri iconUri = item.getDescription().getIconUri();
+        String url = iconUri != null ? iconUri.getQueryParameter("url") : null;
+        if ((url == null || url.isEmpty()) && iconUri != null) {
+          String sch = iconUri.getScheme();
+          if ("http".equalsIgnoreCase(sch) || "https".equalsIgnoreCase(sch)) {
+            url = iconUri.toString();
+          }
+        }
+        if (url == null || url.isEmpty()) continue;
+        try {
+          Bitmap bmp = Glide.with(app)
+            .asBitmap()
+            .load(url)
+            .transform(new CenterCrop())
+            .override(AA_ARTWORK_PX, AA_ARTWORK_PX)
+            .priority(com.bumptech.glide.Priority.LOW)
+            .submit()
+            .get(10, TimeUnit.SECONDS);
+          if (bmp != null) {
+            MediaDescriptionCompat d = item.getDescription();
+            MediaDescriptionCompat.Builder b = new MediaDescriptionCompat.Builder()
+              .setMediaId(d.getMediaId())
+              .setTitle(d.getTitle())
+              .setSubtitle(d.getSubtitle())
+              .setDescription(d.getDescription())
+              .setIconUri(d.getIconUri())
+              .setExtras(d.getExtras())
+              .setIconBitmap(bmp);
+            items.set(i, new MediaBrowserCompat.MediaItem(b.build(), item.getFlags()));
+            ARTWORK_CACHE.put(item.getMediaId(), bmp);
+          }
+        } catch (Throwable ignored) { /* leave without art; not fatal */ }
+      }
+    }
+  }
+
+  /**
+   * Load artwork for a batch of items on a background thread, then refresh each
+   * affected parent ONCE. Items that already carry a bitmap are skipped, so this is
+   * cheap on re-publishes. No timers and no per-item notifications: every bitmap is
+   * decoded and embedded first, then a single notifyChildrenChanged per parent tells
+   * Android Auto to re-read the finished list.
+   */
+  private void loadArtworkForItems(final Context context, final String parentId,
+                                   final List<MediaBrowserCompat.MediaItem> items) {
+    if (context == null || items == null || items.isEmpty()) return;
+    final Context app = context.getApplicationContext();
+    ARTWORK_EXECUTOR.submit(new Runnable() {
+      @Override public void run() {
+        Set<String> affectedParents = new HashSet<>();
+        for (final MediaBrowserCompat.MediaItem item : items) {
+          if (item == null || item.getDescription() == null) continue;
+          if (item.getDescription().getIconBitmap() != null) continue; // already has art
+          Uri iconUri = item.getDescription().getIconUri();
+          // Remote icons are stored as content://…?url=<remote>; recover the source URL.
+          String u = iconUri != null ? iconUri.getQueryParameter("url") : null;
+          if ((u == null || u.isEmpty()) && iconUri != null) {
+            String sch = iconUri.getScheme();
+            if ("http".equalsIgnoreCase(sch) || "https".equalsIgnoreCase(sch)) {
+              u = iconUri.toString();
+            }
+          }
+          if (u == null || u.isEmpty()) continue;
+          final String mediaId = item.getMediaId();
+          try {
+            Bitmap bmp = Glide.with(app)
+              .asBitmap()
+              .load(u)
+              .transform(new CenterCrop())
+              .override(AA_ARTWORK_PX, AA_ARTWORK_PX)
+              .priority(com.bumptech.glide.Priority.LOW)
+              .submit()
+              .get(30, TimeUnit.SECONDS);
+            if (bmp != null) {
+              ARTWORK_CACHE.put(mediaId, bmp);
+              String resolved = MediaItemsStore.getInstance().updateItemBitmapById(mediaId, bmp);
+              affectedParents.add(resolved != null ? resolved : parentId);
+            }
+          } catch (Throwable ignored) { /* leave item without art; not fatal */ }
+        }
+        for (String p : affectedParents) {
+          if (p != null) MediaItemsStore.getInstance().notifyParentChanged(p);
+        }
+      }
+    });
+  }
+
 
   @Override
   public void initialize() {
@@ -196,12 +330,23 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   public void setMediaItems(ReadableMap itemsMap, Promise promise) {
     MBLog.v(TAG, "→ setMediaItems()");
     try {
-      Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsMap);
-      String rootId = itemsMap.getString("id");
-      
-      MediaItemsStore.getInstance().setRootId(rootId);
-      MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
+      final Map<String, List<MediaBrowserCompat.MediaItem>> hierarchy = buildMediaItemsHierarchy(itemsMap);
+      final String rootId = itemsMap.getString("id");
+      final Context context = getReactApplicationContext();
+
+      // Resolve immediately so the bridge thread never blocks on image decoding.
       promise.resolve(null);
+
+      // Load all artwork on a background thread, THEN store the hierarchy. This
+      // guarantees Android Auto never sees items without bitmaps — no "cached as
+      // empty" items, no timers, no re-fetch loops, no scroll disruption.
+      ARTWORK_EXECUTOR.submit(new Runnable() {
+        @Override public void run() {
+          loadBitmapsIntoHierarchy(context, hierarchy);
+          MediaItemsStore.getInstance().setRootId(rootId);
+          MediaItemsStore.getInstance().setMediaItemsHierarchy(hierarchy);
+        }
+      });
     } catch (Exception e) {
       MBLog.e(TAG, "❌ setMediaItems FAILED", e);
       promise.reject("ERROR", e);
@@ -269,6 +414,17 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
           // Handle icon with modern validation, fallback to legacy
           if (item.hasKey("icon")) {
             applyIconWithValidation(item, descriptionBuilder);
+            // Re-attach the decoded artwork from the cache. This is what keeps the
+            // image on items that get frequent updates (e.g. now-playing progress):
+            // the bitmap lives in the cache, not in the item, so an update can't
+            // wipe it regardless of load/update timing. Fall back to the previous
+            // bitmap if the cache hasn't been populated yet.
+            Bitmap cachedArt = ARTWORK_CACHE.get(mediaId);
+            if (cachedArt != null) {
+              descriptionBuilder.setIconBitmap(cachedArt);
+            } else if (oldIconBitmap != null) {
+              descriptionBuilder.setIconBitmap(oldIconBitmap);
+            }
           } else if (item.hasKey("iconUri")) {
             String iconUri = item.getString("iconUri");
             if (iconUri != null && !iconUri.trim().isEmpty()) {
@@ -326,6 +482,23 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
               }
             }
             descriptionBuilder.setExtras(extras);
+          }
+
+          // Always re-attach decoded artwork from the cache before building —
+          // regardless of whether this update carried an icon, iconUri, or only
+          // extras. Now-playing progress updates carry ONLY extras, so they'd
+          // otherwise rely on the old bitmap, which a load/update race can null out
+          // permanently. The cache is the single source of truth for the bitmap.
+          Bitmap cachedArtFinal = ARTWORK_CACHE.get(mediaId);
+          if (cachedArtFinal != null) {
+            descriptionBuilder.setIconBitmap(cachedArtFinal);
+          } else if (existingMediaItem.getDescription().getIconBitmap() == null) {
+            // No cached art yet and the item has no bitmap — kick off a background
+            // load from its existing icon URI. Covers items whose art was never
+            // pre-loaded (e.g. a now-playing item that only arrives via updateMediaItem).
+            // Glide de-dupes, so repeated progress updates won't pile up downloads.
+            loadArtworkForItems(getReactApplicationContext(), null,
+              java.util.Collections.singletonList(existingMediaItem));
           }
 
           MediaDescriptionCompat newDescription = descriptionBuilder.build();
@@ -415,6 +588,8 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
     }
 
     MediaItemsStore.getInstance().updateMediaItems(parentId, updatedItems, replace);
+    // Load artwork on a background thread for this batch too.
+    loadArtworkForItems(getReactApplicationContext(), parentId, updatedItems);
   }
 
   private void sendCarConnectionToJS(Integer carState) {
@@ -496,6 +671,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
 
     // Validate and apply icon (production-clean: no debug bundle)
     applyIconWithValidation(itemMap, description);
+    // Re-attach already-decoded artwork from the cache so a re-published tree keeps
+    // its images immediately (and doesn't need to reload them).
+    Bitmap cachedArt = ARTWORK_CACHE.get(mediaId);
+    if (cachedArt != null) {
+      description.setIconBitmap(cachedArt);
+    }
 
     Bundle extras = new Bundle();
     if (itemMap.hasKey("browsableStyle")) {
@@ -690,17 +871,20 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
           }
         } catch (Exception e) {}
 
-        // 3b) Prefer ContentProvider and also set an eager bitmap so AA can render immediately
+        // 3b) Store a content:// URI that carries the remote URL (?url=). We
+        // deliberately DO NOT decode here — a synchronous fetch+decode per item
+        // would block the bridge thread and freeze the app. The bitmap is loaded
+        // off-bridge later (loadBitmapsIntoHierarchy for setMediaItems, or
+        // loadArtworkForItems for incremental updates) and embedded into the item.
         try {
           Uri contentUri = asAlbumArtContentURI(iconUri);
           description.setIconUri(contentUri);
-          setIconBitmapFromFresco(context, description, iconUri);
           return;
         } catch (Exception e) {}
 
-        // 3c) Fallback: embed bitmap only
+        // 3c) Fallback: keep the raw remote URI so off-bridge loading can still find it.
         try {
-          setIconBitmapFromFresco(context, description, iconUri);
+          description.setIconUri(iconUri);
         } catch (Exception e) {}
       }
 

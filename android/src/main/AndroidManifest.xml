@@ -27,5 +27,23 @@
             </intent-filter>
         </service>
         
+        <!--
+          Album-art content provider for Android Auto. Declared here (not in the
+          consuming app) so every app depending on this library gets it via the
+          manifest merger — no per-app AndroidManifest edits required.
+
+          The authority uses the built-in ${applicationId} placeholder so it stays
+          unique per app (two apps using this library must not register the same
+          provider authority, which would break installation). It is exported so
+          Android Auto (a separate process) can read item art; openFile() only
+          serves remote http/https URLs, so it cannot expose the app's private files.
+        -->
+        <provider
+            android:name=".MediaArtworkContentProvider"
+            android:authorities="${applicationId}.mediabrowser.provider"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            tools:ignore="ExportedContentProvider" />
+        
     </application>
 </manifest>

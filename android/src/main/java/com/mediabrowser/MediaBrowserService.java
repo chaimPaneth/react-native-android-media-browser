@@ -1057,7 +1057,6 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void flushPendingIfReady(@NonNull final String parentId) {
-    // MBLog.v(TAG, "→ flushPendingIfReady(parentId=" + parentId + ")");
     try {
       Result<List<MediaBrowserCompat.MediaItem>> pending = pendingLoadResults.remove(parentId);
       Runnable timeout = pendingTimeouts.remove(parentId);
