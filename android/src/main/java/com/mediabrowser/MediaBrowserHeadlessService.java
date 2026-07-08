@@ -33,6 +33,10 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     public static final String ACTION_MEDIA_ITEM_SELECTED = "com.mediabrowser.ACTION_MEDIA_ITEM_SELECTED";
     public static final String ACTION_BROWSABLE_ITEM_SELECTED = "com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED";
     public static final String ACTION_CAR_CONNECTION_CHANGED = "com.mediabrowser.ACTION_CAR_CONNECTION_CHANGED";
+    // Background auto-advance: JWPlayer completes a track while the app is backgrounded/locked.
+    // The main-context DeviceEventEmitter is suspended in Doze, so we also route completion
+    // through this HeadlessJsTaskService (which holds a wake lock) so the "play next" logic runs.
+    public static final String ACTION_PLAYLIST_COMPLETE = "com.mediabrowser.ACTION_PLAYLIST_COMPLETE";
 
     // Use the same notification ID as MediaBrowserService (2005) so that
     // the media player notification will replace this initializing notification
@@ -103,6 +107,18 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
                         data.putInt("connectionType", extras.getInt("connectionType"));
                     }
                     break;
+                case ACTION_PLAYLIST_COMPLETE:
+                    data.putString("type", "playlist-complete");
+                    if (extras != null) {
+                        if (extras.containsKey("mediaId")) {
+                            data.putString("mediaId", extras.getString("mediaId"));
+                        }
+                        if (extras.containsKey("completionSeq")) {
+                            // Monotonic id used by JS to dedupe the emit vs headless routes.
+                            data.putDouble("completionSeq", extras.getLong("completionSeq"));
+                        }
+                    }
+                    break;
                 default:
                     return null;
             }
@@ -141,7 +157,8 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
             String action = intent.getAction();
             if (action != null && (action.equals(ACTION_MEDIA_ITEM_SELECTED) ||
                                 action.equals(ACTION_BROWSABLE_ITEM_SELECTED) ||
-                                action.equals(ACTION_CAR_CONNECTION_CHANGED))) {
+                                action.equals(ACTION_CAR_CONNECTION_CHANGED) ||
+                                action.equals(ACTION_PLAYLIST_COMPLETE))) {
 
                 ReactContext existingContext = MediaItemsStore.getInstance().getReactApplicationContext();
                 boolean hasActiveReact = existingContext != null && existingContext.hasActiveReactInstance();

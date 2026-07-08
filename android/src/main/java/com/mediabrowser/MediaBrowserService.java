@@ -33,6 +33,7 @@ import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+import com.facebook.react.common.LifecycleState;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -46,6 +47,7 @@ import java.util.Set;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
@@ -64,6 +66,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   // A 300 ms fallback in RNJWMediaSessionHelper fires native skip if the token is not cleared.
   private static final ConcurrentHashMap<String, Long> pendingSkipAcks = new ConcurrentHashMap<>();
   private static final long SKIP_ACK_TIMEOUT_MS = 300;
+
+  // Monotonic id assigned to each playlist completion. Carried on both the main-context
+  // emit and the headless route so JS can dedupe (both fire when backgrounded).
+  private static final AtomicLong sCompletionSeq = new AtomicLong(0);
 
   // Playback speed control state
   private float currentPlaybackSpeed = 1.0f;
@@ -1238,18 +1244,48 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     try {
       MediaItemsStore store = MediaItemsStore.getInstance();
       ReactContext reactContext = store.getReactApplicationContext();
-      
+
+      long completionSeq = sCompletionSeq.incrementAndGet();
+
       if (reactContext != null) {
         WritableMap event = Arguments.createMap();
         event.putString("type", "playlist-complete");
         event.putString("mediaId", mediaId);
         event.putLong("timestamp", System.currentTimeMillis());
-        
+        event.putDouble("completionSeq", (double) completionSeq);
+
         try {
           reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
             .emit("onPlaylistComplete", event);
         } catch (Exception emitError) {
           MBLog.e(TAG, "Error emitting playlist complete event: " + emitError.getMessage(), emitError);
+        }
+
+        // Foreground path is the main-context emit above (JS thread is alive). When there is no
+        // foreground Activity (screen locked / backgrounded / driving on AA), the main JS context
+        // is suspended in Doze and the emit above won't be processed until resume. In that case
+        // also wake JS via the HeadlessJsTaskService (wake-lock backed), mirroring how
+        // media-item-selected already dual-delivers. Both routes carry the same completionSeq,
+        // and JS dedupes so the advance runs exactly once.
+        try {
+          LifecycleState lifecycleState = reactContext.getLifecycleState();
+          MBLog.d(TAG, "[PLAYLIST-ADVANCE-FIX] onPlaylistComplete seq=" + completionSeq
+              + " mediaId=" + mediaId + " lifecycleState=" + lifecycleState
+              + " route=" + (lifecycleState != LifecycleState.RESUMED
+                  ? "headless(background)" : "emit-only(foreground)"));
+          if (lifecycleState != LifecycleState.RESUMED) {
+            android.content.Context ctx = reactContext.getApplicationContext();
+            if (ctx != null) {
+              android.content.Intent intent =
+                new android.content.Intent(ctx, MediaBrowserHeadlessService.class);
+              intent.setAction(MediaBrowserHeadlessService.ACTION_PLAYLIST_COMPLETE);
+              intent.putExtra("mediaId", mediaId);
+              intent.putExtra("completionSeq", completionSeq);
+              ctx.startService(intent);
+            }
+          }
+        } catch (Throwable t) {
+          MBLog.w(TAG, "Failed to start headless service for playlist-complete", t);
         }
       } else {
         MBLog.w(TAG, "Cannot emit playlist complete - no React context");
