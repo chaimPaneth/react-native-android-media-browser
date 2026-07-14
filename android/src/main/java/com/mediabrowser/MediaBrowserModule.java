@@ -69,6 +69,12 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
 
   private CarConnection carConnection;
 
+  // [PLAYLIST-ADVANCE-FIX] Phase 4: last observed CarConnection type. The observer emits the
+  // CURRENT state as its first value on registration, so a plain app open (no Android Auto) fires
+  // 0 (NOT_CONNECTED) -- which must NOT be treated as an "AA disconnect". Tracking the previous
+  // value lets us fire the disconnect cleanup only on a real connected(>0) -> 0 transition.
+  private Integer lastCarConnectionType = null;
+
   private ReactApplicationContext reactContext;
 
   public MediaBrowserModule(ReactApplicationContext reactContext) {
@@ -418,14 +424,25 @@ public class MediaBrowserModule extends ReactContextBaseJavaModule implements Li
   }
 
   private void sendCarConnectionToJS(Integer carState) {
-    MBLog.d(TAG, "Car connection state changed: " + carState);
+    // [PLAYLIST-ADVANCE-FIX] Phase 4: distinguish a REAL Android Auto disconnect (connected -> 0)
+    // from the initial/spurious "not connected" (0) the observer emits on plain app open. The old
+    // code treated every 0 as a disconnect and wiped the MediaSession -- which, on a plain reopen
+    // after background playback, could clobber the freshly-restored playback session.
+    Integer previousCarState = lastCarConnectionType;
+    lastCarConnectionType = carState;
 
-    // When AA disconnects (0 = CONNECTION_TYPE_NOT_CONNECTED), immediately
-    // clean the MediaSession so the NEXT connection starts with a blank state.
-    // The session is a long-lived singleton; without this cleanup it retains
-    // stale actions=311 which AA reads BEFORE onGetRoot() on the next connect,
-    // causing it to navigate to the empty Now Playing screen.
-    if (carState == 0) {
+    boolean isRealDisconnect =
+        carState != null && carState == 0 && previousCarState != null && previousCarState > 0;
+
+    MBLog.d(TAG, "Car connection state changed: " + carState
+        + " (previous=" + previousCarState + ", realDisconnect=" + isRealDisconnect + ")");
+
+    // When AA genuinely disconnects (connected -> 0 = CONNECTION_TYPE_NOT_CONNECTED), clean the
+    // MediaSession so the NEXT connection starts with a blank state. The session is a long-lived
+    // singleton; without this cleanup it retains stale actions=311 which AA reads BEFORE
+    // onGetRoot() on the next connect, causing it to navigate to the empty Now Playing screen.
+    // Guarded so the spurious initial 0 on plain app open does NOT clear an active session.
+    if (isRealDisconnect) {
       MBLog.d(TAG, "  AA disconnected – clearing MediaSession for next reconnect");
       MediaBrowserService.clearSessionForReconnect();
     }

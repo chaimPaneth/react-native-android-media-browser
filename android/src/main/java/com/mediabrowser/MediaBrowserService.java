@@ -67,8 +67,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private static final ConcurrentHashMap<String, Long> pendingSkipAcks = new ConcurrentHashMap<>();
   private static final long SKIP_ACK_TIMEOUT_MS = 300;
 
-  // Monotonic id assigned to each playlist completion. Carried on both the main-context
-  // emit and the headless route so JS can dedupe (both fire when backgrounded).
+  // Monotonic id assigned to each playlist completion and carried on the one selected route.
   private static final AtomicLong sCompletionSeq = new AtomicLong(0);
 
   // Playback speed control state
@@ -1247,7 +1246,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
       long completionSeq = sCompletionSeq.incrementAndGet();
 
-      if (reactContext != null) {
+        LifecycleState lifecycleState = reactContext != null
+          ? reactContext.getLifecycleState()
+          : null;
+        boolean useForegroundRoute = lifecycleState == LifecycleState.RESUMED;
+
+        MBLog.d(TAG, "onPlaylistComplete seq=" + completionSeq
+          + " mediaId=" + mediaId + " lifecycleState=" + lifecycleState
+          + " route=" + (useForegroundRoute ? "foreground" : "headless"));
+
+        if (useForegroundRoute) {
         WritableMap event = Arguments.createMap();
         event.putString("type", "playlist-complete");
         event.putString("mediaId", mediaId);
@@ -1260,35 +1268,24 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         } catch (Exception emitError) {
           MBLog.e(TAG, "Error emitting playlist complete event: " + emitError.getMessage(), emitError);
         }
-
-        // Foreground path is the main-context emit above (JS thread is alive). When there is no
-        // foreground Activity (screen locked / backgrounded / driving on AA), the main JS context
-        // is suspended in Doze and the emit above won't be processed until resume. In that case
-        // also wake JS via the HeadlessJsTaskService (wake-lock backed), mirroring how
-        // media-item-selected already dual-delivers. Both routes carry the same completionSeq,
-        // and JS dedupes so the advance runs exactly once.
+      } else {
         try {
-          LifecycleState lifecycleState = reactContext.getLifecycleState();
-          MBLog.d(TAG, "[PLAYLIST-ADVANCE-FIX] onPlaylistComplete seq=" + completionSeq
-              + " mediaId=" + mediaId + " lifecycleState=" + lifecycleState
-              + " route=" + (lifecycleState != LifecycleState.RESUMED
-                  ? "headless(background)" : "emit-only(foreground)"));
-          if (lifecycleState != LifecycleState.RESUMED) {
-            android.content.Context ctx = reactContext.getApplicationContext();
-            if (ctx != null) {
-              android.content.Intent intent =
-                new android.content.Intent(ctx, MediaBrowserHeadlessService.class);
-              intent.setAction(MediaBrowserHeadlessService.ACTION_PLAYLIST_COMPLETE);
-              intent.putExtra("mediaId", mediaId);
-              intent.putExtra("completionSeq", completionSeq);
-              ctx.startService(intent);
-            }
+          android.content.Context ctx = reactContext != null
+              ? reactContext.getApplicationContext()
+              : (sInstance != null ? sInstance.getApplicationContext() : null);
+          if (ctx != null) {
+            android.content.Intent intent =
+              new android.content.Intent(ctx, MediaBrowserHeadlessService.class);
+            intent.setAction(MediaBrowserHeadlessService.ACTION_PLAYLIST_COMPLETE);
+            intent.putExtra("mediaId", mediaId);
+            intent.putExtra("completionSeq", completionSeq);
+            ctx.startService(intent);
+          } else {
+            MBLog.w(TAG, "Cannot start headless completion - no application context");
           }
         } catch (Throwable t) {
           MBLog.w(TAG, "Failed to start headless service for playlist-complete", t);
         }
-      } else {
-        MBLog.w(TAG, "Cannot emit playlist complete - no React context");
       }
     } catch (Exception e) {
       MBLog.e(TAG, "Error in static sendPlaylistCompleteToReactNative", e);
