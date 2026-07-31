@@ -837,7 +837,8 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * PlaybackManager.hasActivePlayer() is an instance method, so we must get
    * the singleton via getInstance() first.
    */
-  private static boolean checkHasActivePlayer() {
+  /** Package-private so MediaBrowserHeadlessService can apply the same shared-notification rule. */
+  static boolean checkHasActivePlayer() {
     try {
       Class<?> pmClass = Class.forName("com.jwplayer.rnjwplayer.PlaybackManager");
       java.lang.reflect.Method getInst = pmClass.getMethod("getInstance");

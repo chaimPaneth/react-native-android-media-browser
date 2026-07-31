@@ -19,6 +19,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import javax.annotation.Nullable;
 
+import android.app.Service;
 import android.os.Build;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -284,6 +285,22 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     }
 
     private void stopForegroundAndSelf() {
+        // NOTIFICATION_ID_MEDIA_BROWSER is MediaBrowserService.NOTIFICATION_ID (2005), the same
+        // notification RNJWMediaService uses for the JWPlayer media-playback foreground service.
+        // stopForeground(true) removes it, which demotes that service; it then cannot be
+        // re-promoted from the background and gets killed with "Stopping service due to app idle",
+        // cutting the app's network and stopping playback. This service is routinely stopped while
+        // playback continues (headless task finish, auto-stop, app idle), so detach instead of
+        // removing the shared notification whenever a JWPlayer instance is active.
+        boolean hasActivePlayer = MediaBrowserService.checkHasActivePlayer();
+        MBLog.d(TAG, "stopForegroundAndSelf: hasActivePlayer=" + hasActivePlayer);
+        if (hasActivePlayer) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(Service.STOP_FOREGROUND_DETACH);
+            }
+            stopSelf();
+            return;
+        }
         stopForeground(true);
         stopSelf();
     }
