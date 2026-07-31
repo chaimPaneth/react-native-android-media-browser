@@ -3,12 +3,25 @@
   package="com.mediabrowser">
   
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   
     <application>
+        <!--
+            foregroundServiceType is REQUIRED on both services below: they call
+            startForeground(id, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK).
+            Without the matching manifest attribute the platform throws
+              IllegalArgumentException: foregroundServiceType 0x00000002 is not a subset of
+              foregroundServiceType attribute 0x00000000
+            so the service never becomes foreground. On Android 15+/17 the process is then treated
+            as having no qualifying media foreground service and background playback is stopped for
+            app idle a minute or so after the screen turns off.
+        -->
         <service
             android:name=".MediaBrowserService"
             android:exported="true"
             android:enabled="true"
+            android:foregroundServiceType="mediaPlayback"
             tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
@@ -19,7 +32,8 @@
         <service
             android:name=".MediaBrowserHeadlessService"
             android:exported="false"
-            android:enabled="true">
+            android:enabled="true"
+            android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="com.mediabrowser.ACTION_MEDIA_ITEM_SELECTED" />
                 <action android:name="com.mediabrowser.ACTION_BROWSABLE_ITEM_SELECTED" />

@@ -950,8 +950,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       MBLog.d(TAG, "  🧹 onDestroy: session fully released (no active player)");
     }
     
-    // Release the singleton (safe — no JWPlayer holding reference)
-    MediaSessionSingleton.release();
+    // Only release the shared singleton when nothing is playing. Releasing it while a JWPlayer
+    // owner is attached destroys the MediaSession that the media-playback FGS notification (2005)
+    // is linked to; the platform reacts with "setFgsInactiveLocked ... notification=2005" and the
+    // playback service silently loses its foreground state. The hasActivePlayer branch above
+    // already avoided touching mSession, but this unconditional release undid that.
+    if (!hasActivePlayer) {
+      MediaSessionSingleton.release();
+    } else {
+      MBLog.d(TAG, "onDestroy: keeping shared MediaSession (JWPlayer active)");
+    }
 
     sInstance = null;
     stopForegroundAndSelf();
@@ -1740,7 +1748,23 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void stopForegroundAndSelf() {
-    MBLog.d(TAG, "Stopping foreground service and self");
+    // NOTIFICATION_ID (2005) is shared with RNJWMediaService, which uses it for the JWPlayer
+    // media-playback foreground service. stopForeground(true) removes that notification, and the
+    // platform then drops the other service's foreground state (visible in logcat as
+    // "setFgsInactiveLocked ... notification=2005"). Once demoted it cannot be re-promoted from the
+    // background (ForegroundServiceStartNotAllowedException) and the service is killed with
+    // "Stopping service due to app idle", which cuts the app's network and kills playback.
+    // So while a JWPlayer instance is active, detach instead of removing the shared notification.
+    boolean hasActivePlayer = checkHasActivePlayer();
+    MBLog.d(TAG, "stopForegroundAndSelf: hasActivePlayer=" + hasActivePlayer);
+    if (hasActivePlayer) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        stopForeground(Service.STOP_FOREGROUND_DETACH);
+      }
+      // Deliberately not calling stopSelf(): the owning playback service keeps this process alive
+      // and removing ourselves here is what previously took the shared notification down.
+      return;
+    }
     stopForeground(true);
     stopSelf();
   }
