@@ -54,7 +54,16 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   private static final String EMPTY_RECENT_ROOT_ID = "__EMPTY_RECENT__";
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
-  public static final int NOTIFICATION_ID = 2005;
+  /**
+   * Own foreground-service notification id. Deliberately distinct from
+   * RNJWNotificationHelper.DEFAULT_NOTIFICATION_ID (2005), which is owned exclusively by
+   * JWPlayer's MediaStyle notification. Sharing 2005 meant this service's plain cold-start
+   * notification replaced the MediaStyle one, leaving SystemUI with a notification key it
+   * could not build media controls from ("No result from loadMediaData").
+   */
+  public static final int NOTIFICATION_ID = 2006;
+  /** The id RNJWNotificationHelper posts its MediaStyle notification under. Never posted to here. */
+  public static final int JWPLAYER_MEDIA_NOTIFICATION_ID = 2005;
   public static final String ACTION_JS_READY = "com.mediabrowser.ACTION_JS_READY";
 
   // Static instance for cross-component access (e.g., from MediaBrowserModule)
@@ -82,6 +91,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   // Pending async loads (event-driven). Avoid polling loops.
   private final Map<String, Result<List<MediaBrowserCompat.MediaItem>>> pendingLoadResults = new HashMap<>();
   private final Map<String, Runnable> pendingTimeouts = new HashMap<>();
+
+  /** True while this service holds its own foreground notification (NOTIFICATION_ID). */
+  private boolean holdsOwnNotification = false;
 
   @Override
   public void onCreate() {
@@ -316,11 +328,27 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
       Notification notification = builder.build();
 
-      // Android 14+ (API 34+) requires specifying the foreground service type
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+      // Only promote when JWPlayer is NOT already running a media FGS. During playback the
+      // JWPlayer MediaStyle notification is the user-visible media control surface; posting
+      // a second plain ongoing notification here is noise at best and, when SystemUI's media
+      // resumption probe re-creates this service every ~1.5s, a permanent replacement of the
+      // controls at worst. The promotion is still required on cold start (force-stop), where it
+      // is what permits a background activity launch on Android 12+.
+      boolean jwPlayerActive = checkHasActivePlayer();
+      MBLog.e(TAG, "onCreate: startForeground decision jwPlayerActive=" + jwPlayerActive
+        + " isColdStart=" + isColdStart);
+
+      if (!jwPlayerActive) {
+        // Android 14+ (API 34+) requires specifying the foreground service type
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        } else {
+          startForeground(NOTIFICATION_ID, notification);
+        }
+        holdsOwnNotification = true;
       } else {
-        startForeground(NOTIFICATION_ID, notification);
+        MBLog.d(TAG, "onCreate: JWPlayer active — skipping cold-start notification, "
+          + "MediaStyle notification " + JWPLAYER_MEDIA_NOTIFICATION_ID + " stays owner");
       }
 
       // CRITICAL: After force-stop, React Native MUST be initialized WITHOUT launching MainActivity
@@ -398,6 +426,29 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     syncSessionFromActivePlayer();
 
     setSessionToken(mSession.getSessionToken());
+  }
+
+  /**
+   * Called (via reflection) by RNJWMediaService once it has promoted to foreground with the
+   * real MediaStyle notification. Drops this service's plain placeholder so the user never sees
+   * two notifications, while leaving the process's media FGS state owned by the playback service.
+   */
+  public static void onJwPlayerNotificationPosted() {
+    MediaBrowserService self = sInstance;
+    if (self == null || !self.holdsOwnNotification) {
+      return;
+    }
+    MBLog.e(TAG, "onJwPlayerNotificationPosted: dropping placeholder " + NOTIFICATION_ID);
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        self.stopForeground(Service.STOP_FOREGROUND_REMOVE);
+      } else {
+        self.stopForeground(true);
+      }
+    } catch (Throwable t) {
+      MBLog.w(TAG, "onJwPlayerNotificationPosted failed: " + t.getMessage());
+    }
+    self.holdsOwnNotification = false;
   }
 
   /**
@@ -1260,7 +1311,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           : null;
         boolean useForegroundRoute = lifecycleState == LifecycleState.RESUMED;
 
-        MBLog.d(TAG, "onPlaylistComplete seq=" + completionSeq
+        MBLog.e(TAG, "onPlaylistComplete seq=" + completionSeq
           + " mediaId=" + mediaId + " lifecycleState=" + lifecycleState
           + " route=" + (useForegroundRoute ? "foreground" : "headless"));
 
@@ -1631,35 +1682,12 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
   
   private void showMediaNotification(String title, String artist) {
-    try {
-      // Create delete intent for when notification is dismissed
-      Intent deleteIntent = new Intent(this, MediaBrowserService.class);
-      deleteIntent.setAction("media_action_dismiss");
-      PendingIntent deletePendingIntent = PendingIntent.getService(this, "dismiss".hashCode(), deleteIntent,
-        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-      
-      // Create notification with media controls
-      NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle(title)
-        .setContentText(artist)
-        .setSmallIcon(android.R.drawable.ic_media_play)
-        .setStyle(new MediaStyle()
-          .setMediaSession(mSession.getSessionToken())
-          .setShowActionsInCompactView(0, 1, 2))
-        .addAction(android.R.drawable.ic_media_previous, "Previous", createMediaActionIntent("previous"))
-        .addAction(android.R.drawable.ic_media_pause, "Pause", createMediaActionIntent("pause"))
-        .addAction(android.R.drawable.ic_media_next, "Next", createMediaActionIntent("next"))
-        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .setOngoing(true)
-        .setDeleteIntent(deletePendingIntent); // Add delete intent
-      
-      Notification notification = builder.build();
-      startForeground(NOTIFICATION_ID, notification);
-      
-    } catch (Exception e) {
-      MBLog.e(TAG, "Error showing media notification", e);
-    }
+    // JWPlayer's RNJWNotificationHelper owns the MediaStyle notification (id 2005). Posting a
+    // second MediaStyle notification here produced two media entries in SystemUI once the ids
+    // were split. When no JWPlayer instance is attached there is nothing to show controls for
+    // either, so this is now a no-op that only refreshes the session-backed state.
+    MBLog.d(TAG, "showMediaNotification: delegated to RNJWNotificationHelper (title=" + title + ")");
+    syncSessionFromActivePlayer();
   }
   
   private PendingIntent createMediaActionIntent(String action) {
@@ -1749,24 +1777,23 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   private void stopForegroundAndSelf() {
-    // NOTIFICATION_ID (2005) is shared with RNJWMediaService, which uses it for the JWPlayer
-    // media-playback foreground service. stopForeground(true) removes that notification, and the
-    // platform then drops the other service's foreground state (visible in logcat as
-    // "setFgsInactiveLocked ... notification=2005"). Once demoted it cannot be re-promoted from the
-    // background (ForegroundServiceStartNotAllowedException) and the service is killed with
-    // "Stopping service due to app idle", which cuts the app's network and kills playback.
-    // So while a JWPlayer instance is active, detach instead of removing the shared notification.
+    // Since NOTIFICATION_ID is now this service's own id (2006) and no longer shared with
+    // RNJWMediaService's 2005, stopForeground(true) can no longer demote the playback service.
+    // The active-player branch is retained as defence in depth for hosts that still build with
+    // an older library where the ids were shared.
     boolean hasActivePlayer = checkHasActivePlayer();
-    MBLog.d(TAG, "stopForegroundAndSelf: hasActivePlayer=" + hasActivePlayer);
+    MBLog.d(TAG, "stopForegroundAndSelf: hasActivePlayer=" + hasActivePlayer
+      + " holdsOwnNotification=" + holdsOwnNotification);
     if (hasActivePlayer) {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         stopForeground(Service.STOP_FOREGROUND_DETACH);
       }
-      // Deliberately not calling stopSelf(): the owning playback service keeps this process alive
-      // and removing ourselves here is what previously took the shared notification down.
+      holdsOwnNotification = false;
+      stopSelf();
       return;
     }
     stopForeground(true);
+    holdsOwnNotification = false;
     stopSelf();
   }
 }

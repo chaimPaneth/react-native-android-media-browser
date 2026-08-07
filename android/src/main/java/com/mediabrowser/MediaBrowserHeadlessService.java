@@ -39,10 +39,13 @@ public class MediaBrowserHeadlessService extends HeadlessJsTaskService {
     // through this HeadlessJsTaskService (which holds a wake lock) so the "play next" logic runs.
     public static final String ACTION_PLAYLIST_COMPLETE = "com.mediabrowser.ACTION_PLAYLIST_COMPLETE";
 
-    // Use the same notification ID as MediaBrowserService (2005) so that
-    // the media player notification will replace this initializing notification
-    // instead of showing two separate notifications
-    private static final int NOTIFICATION_ID_MEDIA_BROWSER = MediaBrowserService.NOTIFICATION_ID;
+    /**
+     * Own notification id. Previously this reused MediaBrowserService.NOTIFICATION_ID, which was
+     * itself 2005 — RNJWNotificationHelper's MediaStyle id. The "Connecting..." placeholder could
+     * therefore replace the real media controls. The !hasActiveReact guard in onStartCommand
+     * already mitigated the common case; a distinct id removes the failure mode entirely.
+     */
+    private static final int NOTIFICATION_ID_MEDIA_BROWSER = 2007;
     private static final String CHANNEL_ID = "MediaPlayback";
     private static final long EVENT_THROTTLE_MS = 5000; // Throttle events to max once per 5 seconds
     private long lastEventEmitTime = 0;
