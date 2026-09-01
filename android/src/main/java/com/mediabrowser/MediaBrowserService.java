@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.media.MediaMetadata;
 import androidx.media.MediaBrowserServiceCompat;
+import androidx.media.utils.MediaConstants;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.net.Uri;
@@ -52,6 +53,15 @@ import java.util.concurrent.atomic.AtomicLong;
 public class MediaBrowserService extends MediaBrowserServiceCompat implements MediaItemsStore.MediaItemsUpdateListener {
   private static final String MEDIA_ROOT_ID = "ROOT";
   private static final String EMPTY_RECENT_ROOT_ID = "__EMPTY_RECENT__";
+  /** Browse node holding recently played items, most recent first. */
+  private static final String HISTORY_PARENT_ID = "History";
+  /**
+   * Browse node the JS layer publishes in place of real content when no user is
+   * signed in. Its presence in ROOT is the signal that the tree is unauthenticated
+   * rather than merely empty. If the JS layer ever renames it, the resume path
+   * degrades to the generic "nothing to resume" message rather than misbehaving.
+   */
+  private static final String LOGIN_NODE_ID = "Login";
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
   /**
@@ -94,6 +104,14 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
 
   /** True while this service holds its own foreground notification (NOTIFICATION_ID). */
   private boolean holdsOwnNotification = false;
+
+  /**
+   * Whether the session currently carries a "cannot resume" error that was published in
+   * answer to a resume request. The head unit keeps its error screen up for as long as
+   * that state stands, so it has to be withdrawn once the reason for it goes away —
+   * otherwise signing in on the phone leaves the message on screen indefinitely.
+   */
+  private boolean cannotResumeErrorPublished = false;
 
   @Override
   public void onCreate() {
@@ -191,16 +209,34 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         @Override
         public void onPlay() {
             MBLog.v(TAG, "→ onPlay()");
-            // Guard: ignore resume-play from Android Auto when no media is loaded.
-            // AA sends onPlay() immediately after connecting to resume the last
-            // session, but if no track metadata exists yet the player would open
-            // an empty Now Playing screen.
-            if (mSession != null && mSession.getController() != null
-                    && mSession.getController().getMetadata() == null) {
-                MBLog.d(TAG, "  ↩ Ignoring onPlay – no media metadata loaded yet");
+
+            boolean hasMetadata = mSession != null && mSession.getController() != null
+                    && mSession.getController().getMetadata() != null;
+
+            if (hasMetadata) {
+                delegateToRNJWMediaSessionHelper("onPlay", null, null);
                 return;
             }
-            delegateToRNJWMediaSessionHelper("onPlay", null, null);
+
+            // No metadata: this is a bare resume request, which Android Auto issues
+            // on car connect when the previous session ended while playing. It then
+            // holds the player screen until playback actually starts, so returning
+            // without doing anything leaves the user on an empty player until the
+            // request times out. Resume the most recent item instead.
+            String resumeId = findMostRecentHistoryMediaId();
+
+            if (resumeId != null) {
+                MBLog.d(TAG, "  ▶️ Bare onPlay with no metadata — resuming most recent item: " + resumeId);
+                onPlayFromMediaId(resumeId, null);
+                return;
+            }
+
+            // Nothing to resume. Answer immediately so the caller abandons the resume
+            // attempt instead of waiting for a playback start that will never happen.
+            MBLog.d(TAG, "  ⛔ Bare onPlay with nothing to resume "
+                    + "(hierarchyReady=" + MediaItemsStore.getInstance().isHierarchyReady()
+                    + ") — answering so the caller stops waiting");
+            reportCannotResume();
         }
         
         @Override
@@ -429,6 +465,182 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
   }
 
   /**
+   * Media id of the most recently played item, or null when nothing is available.
+   *
+   * Reads the History browse node, which is ordered most-recent-first, and returns
+   * its first playable entry. Returns null when the browse hierarchy has not been
+   * populated yet — in that case there is genuinely nothing to resume, because the
+   * store has no record of what was last played.
+   */
+  private String findMostRecentHistoryMediaId() {
+    try {
+      List<MediaBrowserCompat.MediaItem> history =
+              MediaItemsStore.getInstance().getSafeMediaItemsByParentId(HISTORY_PARENT_ID);
+      if (history == null || history.isEmpty()) {
+        return null;
+      }
+      for (MediaBrowserCompat.MediaItem item : history) {
+        if (item != null && item.isPlayable() && item.getMediaId() != null) {
+          return item.getMediaId();
+        }
+      }
+    } catch (Throwable t) {
+      MBLog.w(TAG, "findMostRecentHistoryMediaId failed: " + t.getMessage());
+    }
+    return null;
+  }
+
+  /**
+   * Whether ROOT currently represents an unauthenticated tree.
+   *
+   * When nobody is signed in, the JS layer replaces the usual sections with a single
+   * login node, so there is no content to resume and none to browse either. That case
+   * needs a different answer from "signed in but nothing played yet".
+   */
+  private boolean isSignedOutTree() {
+    try {
+      List<MediaBrowserCompat.MediaItem> rootChildren =
+              MediaItemsStore.getInstance().getSafeMediaItemsByParentId(MEDIA_ROOT_ID);
+      if (rootChildren == null || rootChildren.isEmpty()) {
+        return true;
+      }
+      for (MediaBrowserCompat.MediaItem item : rootChildren) {
+        if (item != null && LOGIN_NODE_ID.equalsIgnoreCase(item.getMediaId())) {
+          return true;
+        }
+      }
+    } catch (Throwable t) {
+      MBLog.w(TAG, "isSignedOutTree failed: " + t.getMessage());
+    }
+    return false;
+  }
+
+  /**
+   * Answer a resume request that cannot be satisfied, immediately and in the user's terms.
+   *
+   * A caller that asked the session to resume keeps its player screen up until the session
+   * reports progress, so this must respond rather than stay silent — staying silent is what
+   * left the user watching an empty player until the request timed out.
+   *
+   * The error message is rendered verbatim on the car screen, so it is written for the user,
+   * not for a log. When the tree is unauthenticated the message is paired with a resolution
+   * action, which the head unit renders as a button that opens this app on the phone so the
+   * user can sign in there.
+   */
+  private void reportCannotResume() {
+    if (mSession == null) {
+      return;
+    }
+    try {
+      boolean signedOut = isSignedOutTree();
+
+      CharSequence appLabel = getApplicationInfo().loadLabel(getPackageManager());
+      String message = signedOut
+              ? "Sign in to " + appLabel + " on your phone to listen here"
+              : "Nothing played yet — choose something to start";
+      int errorCode = signedOut
+              ? PlaybackStateCompat.ERROR_CODE_AUTHENTICATION_EXPIRED
+              : PlaybackStateCompat.ERROR_CODE_ACTION_ABORTED;
+
+      PlaybackStateCompat.Builder builder = new PlaybackStateCompat.Builder()
+              .setState(PlaybackStateCompat.STATE_ERROR, 0, 0f)
+              .setActions(0L)
+              .setErrorMessage(errorCode, message);
+
+      if (signedOut) {
+        Bundle resolution = buildSignInResolutionExtras();
+        if (resolution != null) {
+          builder.setExtras(resolution);
+        }
+      }
+
+      mSession.setPlaybackState(builder.build());
+      cannotResumeErrorPublished = true;
+      MBLog.d(TAG, "  ⛔ Published STATE_ERROR (signedOut=" + signedOut + "): " + message);
+    } catch (Throwable t) {
+      MBLog.w(TAG, "reportCannotResume failed: " + t.getMessage());
+    }
+  }
+
+  /**
+   * Withdraw a "cannot resume" error once the condition behind it has gone.
+   *
+   * The head unit shows its error screen for as long as the session reports an error, and
+   * nothing else in this class ever moves the session out of that state when no playback
+   * follows. So a user who signs in on the phone while the sign-in message is up would keep
+   * staring at it until backing out by hand. Returning to STATE_NONE releases that screen
+   * and lets the refreshed browse tree be shown instead.
+   *
+   * Only ever touches a session that is actually in the error state, so a real playback
+   * state pushed by the player is never overwritten.
+   */
+  private void clearCannotResumeErrorIfResolved() {
+    if (!cannotResumeErrorPublished || mSession == null) {
+      return;
+    }
+    // Still unauthenticated: the message is still the right thing to show.
+    if (isSignedOutTree()) {
+      return;
+    }
+    try {
+      PlaybackStateCompat current = mSession.getController() != null
+              ? mSession.getController().getPlaybackState()
+              : null;
+      if (current != null && current.getState() != PlaybackStateCompat.STATE_ERROR) {
+        // Something real took over already; nothing to withdraw.
+        cannotResumeErrorPublished = false;
+        return;
+      }
+
+      mSession.setPlaybackState(new PlaybackStateCompat.Builder()
+              .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
+              .setActions(0L)
+              .build());
+      cannotResumeErrorPublished = false;
+      MBLog.d(TAG, "  ✅ Withdrew resume error — content is available again");
+
+      // A client parked on the login node needs to be told to re-query it, so the
+      // now-invalid id can send it back out to the refreshed tree.
+      try {
+        notifyChildrenChanged(LOGIN_NODE_ID);
+      } catch (Throwable ignored) {}
+    } catch (Throwable t) {
+      MBLog.w(TAG, "clearCannotResumeErrorIfResolved failed: " + t.getMessage());
+    }
+  }
+
+  /**
+   * Extras that turn a sign-in error into a tappable action on the car screen.
+   *
+   * The head unit renders the label as a button and fires the intent on the phone, which
+   * is the only place credentials can be entered. Returns null when no launch intent
+   * exists, in which case the error is still shown, just without the button.
+   */
+  private Bundle buildSignInResolutionExtras() {
+    try {
+      Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+      if (launchIntent == null) {
+        return null;
+      }
+      launchIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+      PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, launchIntent,
+              PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+      Bundle extras = new Bundle();
+      extras.putString(
+              MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL,
+              "Sign in");
+      extras.putParcelable(
+              MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT,
+              pendingIntent);
+      return extras;
+    } catch (Throwable t) {
+      MBLog.w(TAG, "buildSignInResolutionExtras failed: " + t.getMessage());
+      return null;
+    }
+  }
+
+  /**
    * Called (via reflection) by RNJWMediaService once it has promoted to foreground with the
    * real MediaStyle notification. Drops this service's plain placeholder so the user never sees
    * two notifications, while leaving the process's media FGS state owned by the playback service.
@@ -487,6 +699,17 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
     if (EMPTY_RECENT_ROOT_ID.equals(parentMediaId)) {
       MBLog.d(TAG, "  ↩ Returning empty children for EMPTY_RECENT_ROOT");
       result.sendResult(new ArrayList<>());
+      return;
+    }
+
+    // The login node exists only while unauthenticated, and it never has children.
+    // A client that had navigated into it stays there after a sign-in, re-querying a
+    // node that is no longer part of the tree and being handed an empty list forever.
+    // A null result marks the id invalid, which is the one answer that makes the client
+    // leave the screen on its own instead of waiting for content that will never come.
+    if (LOGIN_NODE_ID.equals(parentMediaId) && !isSignedOutTree()) {
+      MBLog.d(TAG, "  ↩ Login node requested after sign-in — answering null so the client leaves it");
+      result.sendResult(null);
       return;
     }
 
@@ -919,6 +1142,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
           .setState(PlaybackStateCompat.STATE_NONE, 0, 1.0f)
           .setActions(0L)
           .build());
+      sInstance.cannotResumeErrorPublished = false;
       MBLog.d(TAG, "🧹 clearSessionForReconnect: session cleaned (active=false, actions=0, metadata=null)");
     } catch (Exception e) {
       MBLog.w(TAG, "clearSessionForReconnect failed: " + e.getMessage());
@@ -1048,6 +1272,10 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
       parentId = MEDIA_ROOT_ID;
     }
 
+    // A tree update may mean a sign-in completed or content finally arrived, which
+    // retires any resume error still on screen.
+    clearCannotResumeErrorIfResolved();
+
     // If root changed, allow re-sending browse events for deep nodes
     java.util.Set<String> browsedSnapshot = null;
     if (MEDIA_ROOT_ID.equals(parentId)) {
@@ -1145,6 +1373,27 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                                int clientUid,
                                @Nullable Bundle rootHints) {
     MBLog.v(TAG, "→ onGetRoot(clientPackage=" + clientPackageName + ", uid=" + clientUid + ")");
+
+    // Connect-time posture: this is what the client reads before it decides which
+    // screen to open, so record it verbatim.
+    try {
+      String state = "n/a";
+      boolean hasMeta = false;
+      boolean active = mSession != null && mSession.isActive();
+      if (mSession != null && mSession.getController() != null) {
+        hasMeta = mSession.getController().getMetadata() != null;
+        PlaybackStateCompat p = mSession.getController().getPlaybackState();
+        state = (p == null) ? "null" : String.valueOf(p.getState());
+      }
+      MBLog.d(TAG, "  🔎 connect posture: sessionActive=" + active
+              + " hasMetadata=" + hasMeta
+              + " playbackState=" + state
+              + " hierarchyReady=" + MediaItemsStore.getInstance().isHierarchyReady()
+              + " recentHint=" + (rootHints != null
+                  && rootHints.getBoolean("android.service.media.extra.RECENT", false)));
+    } catch (Throwable t) {
+      MBLog.w(TAG, "connect posture probe failed: " + t.getMessage());
+    }
 
     // Handle Android Auto EXTRA_RECENT hint.
     // AA asks "do you have something to resume?" — only say "yes" when there is
@@ -1631,7 +1880,7 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
         
         // Set metadata
         mSession.setMetadata(metadataBuilder.build());
-        
+
         // Activate the session now that we have real metadata.
         // Doing this here (not in onCreate) prevents Android Auto from
         // navigating to an empty Now Playing screen on launch.
