@@ -62,6 +62,9 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * degrades to the generic "nothing to resume" message rather than misbehaving.
    */
   private static final String LOGIN_NODE_ID = "Login";
+  /** How long a bare resume request may wait for the browse tree before being answered. */
+  private static final int RESUME_WAIT_TOTAL_MS = 12000;
+  private static final int RESUME_WAIT_STEP_MS = 500;
   private static final String TAG = "MediaBrowserService";
   private static final String CHANNEL_ID = "MediaPlaybackChannel";
   /**
@@ -231,12 +234,59 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
                 return;
             }
 
-            // Nothing to resume. Answer immediately so the caller abandons the resume
-            // attempt instead of waiting for a playback start that will never happen.
-            MBLog.d(TAG, "  ⛔ Bare onPlay with nothing to resume "
-                    + "(hierarchyReady=" + MediaItemsStore.getInstance().isHierarchyReady()
-                    + ") — answering so the caller stops waiting");
+            // Nothing resolvable YET. On a cold start the request routinely arrives
+            // before the browse tree exists, and an empty tree is indistinguishable
+            // from a signed-out one, so answering now would tell a signed-in user to
+            // sign in. Wait for the tree instead, then answer from real data.
+            if (!MediaItemsStore.getInstance().isHierarchyReady()) {
+                MBLog.d(TAG, "  ⏳ Bare onPlay before the browse tree exists — waiting before answering");
+                awaitHierarchyThenAnswerResume(0);
+                return;
+            }
+
+            // Tree is loaded and still has nothing to resume, so this is a real answer.
+            MBLog.d(TAG, "  ⛔ Bare onPlay with nothing to resume — answering so the caller stops waiting");
             reportCannotResume();
+        }
+
+        /**
+         * Re-check for something to resume until the browse tree is populated.
+         *
+         * A resume request is only answerable once the tree exists: before that, a
+         * missing History entry means "not loaded", not "nothing played". Polling here
+         * keeps the caller's player screen up for the short time the first load takes,
+         * which is the same wait it already tolerates, and then either starts real
+         * playback or gives a truthful refusal. Bounded so the request is always
+         * answered rather than left hanging.
+         */
+        private void awaitHierarchyThenAnswerResume(final int elapsedMs) {
+            if (MediaItemsStore.getInstance().isHierarchyReady()) {
+                String readyId = findMostRecentHistoryMediaId();
+                if (readyId != null) {
+                    MBLog.d(TAG, "  ▶️ Browse tree arrived after " + elapsedMs
+                            + "ms — resuming most recent item: " + readyId);
+                    onPlayFromMediaId(readyId, null);
+                } else {
+                    MBLog.d(TAG, "  ⛔ Browse tree arrived after " + elapsedMs
+                            + "ms with nothing to resume — answering now");
+                    reportCannotResume();
+                }
+                return;
+            }
+
+            if (elapsedMs >= RESUME_WAIT_TOTAL_MS) {
+                MBLog.d(TAG, "  ⛔ Browse tree still absent after " + elapsedMs
+                        + "ms — answering so the caller stops waiting");
+                reportCannotResume();
+                return;
+            }
+
+            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    awaitHierarchyThenAnswerResume(elapsedMs + RESUME_WAIT_STEP_MS);
+                }
+            }, RESUME_WAIT_STEP_MS);
         }
         
         @Override
@@ -496,13 +546,20 @@ public class MediaBrowserService extends MediaBrowserServiceCompat implements Me
    * When nobody is signed in, the JS layer replaces the usual sections with a single
    * login node, so there is no content to resume and none to browse either. That case
    * needs a different answer from "signed in but nothing played yet".
+   *
+   * The login node is the ONLY accepted signal. An absent or empty ROOT is deliberately
+   * not treated as signed out: before the first load it is simply unpopulated, and a
+   * signed-in user on a cold start must never be told to sign in.
    */
   private boolean isSignedOutTree() {
     try {
+      if (!MediaItemsStore.getInstance().isHierarchyReady()) {
+        return false;
+      }
       List<MediaBrowserCompat.MediaItem> rootChildren =
               MediaItemsStore.getInstance().getSafeMediaItemsByParentId(MEDIA_ROOT_ID);
       if (rootChildren == null || rootChildren.isEmpty()) {
-        return true;
+        return false;
       }
       for (MediaBrowserCompat.MediaItem item : rootChildren) {
         if (item != null && LOGIN_NODE_ID.equalsIgnoreCase(item.getMediaId())) {
